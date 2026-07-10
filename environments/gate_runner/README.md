@@ -13,6 +13,8 @@ penalty.
 - **Task:** single-turn JSON generation
 - **Default panel:** deterministic synthetic 22-asset daily panel, used so the
   package is self-contained and redistributable
+- **Public real-data panel:** opt-in `ecb_fx` profile with 29 ECB daily euro
+  reference-rate series, 2009-2024
 - **Point-in-time rule:** prompt features use data strictly before the episode
   cutoff; all grading windows begin at or after the cutoff
 - **Execution:** close-to-close signals, equal-weight long-only positions,
@@ -60,6 +62,18 @@ prime env install br-322/gate-runner --plain
 prime eval run br-322/gate-runner
 ```
 
+Run the bundled real-data profile with enough held-out rows for the 200-example
+baseline:
+
+```bash
+prime eval run br-322/gate-runner \
+  -a '{"dataset":"ecb_fx","eval_examples":200}' \
+  -n 20 -r 3
+```
+
+Keep the 20-example run as a preflight. Once its reward distribution and samples
+look healthy, raise `-n` to `200` for the baseline report.
+
 For development from a Prime Lab workspace containing this source:
 
 ```bash
@@ -86,6 +100,7 @@ uv run --project environments/gate_runner --group dev pytest -q
 | `eval_examples` | `24` | Number of held-out eval cutoffs |
 | `windows` | `8` | Even number of sequential CSCV windows, at least four |
 | `window_days` | `42` | Sessions per hidden window, at least 20 |
+| `dataset` | `synthetic` | Built-in panel: `synthetic` or `ecb_fx` |
 | `data_path` | `null` | Optional caller-owned long-form market CSV |
 
 Example with local data:
@@ -94,6 +109,9 @@ Example with local data:
 prime eval run gate-runner \
   -a '{"data_path":"/absolute/path/market.csv"}'
 ```
+
+`data_path` is an alternative to the built-in profiles and cannot be combined
+with `dataset="ecb_fx"`.
 
 The CSV must be a complete rectangular panel with at least 1,600 dates and these
 columns:
@@ -119,11 +137,17 @@ its defining behavior.
 
 ## Data status and limitations
 
-No third-party market rows are bundled. The default synthetic panel makes the
-core scoring behavior deterministic and the package self-contained, but it is
-not a substitute for a public-market baseline. Any bundled market dataset must
-have explicit redistribution terms, source attribution, and reproducible
-provenance.
+The deterministic synthetic panel remains the default and the signature-test
+oracle. The opt-in ECB profile is the public real-data baseline. Its package
+contains the exact standard CSV returned by the documented ECB API query,
+gzip-compressed; runtime filtering and generated fields are listed in
+[DATA_PROVENANCE.md](DATA_PROVENANCE.md).
+
+ECB rates are reference rates published for information, not executable dealing
+quotes. They provide close-like observations but no OHLCV or transaction-cost
+data, so Gate Runner uses a disclosed constant spread proxy. The 29 pairs also
+share the euro as their base currency; this is an FX cross-section, not the
+equity universe represented by the synthetic fixture.
 
 This compact backtester intentionally omits shorts, corporate actions, tax
 effects, borrow, and intraday execution. Results are environment scores, not
@@ -136,5 +160,7 @@ investment advice.
 
 ## License
 
-Gate Runner is licensed under the
+Gate Runner's code is licensed under the
 [Apache License 2.0](https://github.com/BR-322/gate-runner/blob/main/LICENSE).
+The bundled ECB source snapshot remains subject to the ECB reuse terms recorded
+in [DATA_PROVENANCE.md](DATA_PROVENANCE.md); it is not relicensed under Apache-2.0.

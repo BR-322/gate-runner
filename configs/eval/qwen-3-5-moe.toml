@@ -1,13 +1,15 @@
 # Qwen3.5 MoE models. Uncomment exactly one model.
-model = "Qwen/Qwen3.5-35B-A3B"
+model = "qwen/qwen3.5-35b-a3b"
 # model = "Qwen/Qwen3.5-122B-A10B"
-# model = "Qwen/Qwen3.5-397B-A17B"
+# model = "qwen/qwen3.5-397b-a17b"
 
 num_examples = 20
 rollouts_per_example = 3
 max_tokens = 2048
+# Raise num_examples to 200 after the preflight passes sample inspection.
 
 [[eval]]
 env_id = "br-322/gate-runner"
+env_args = { dataset = "ecb_fx", eval_examples = 200 }
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

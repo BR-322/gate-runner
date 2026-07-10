@@ -13,6 +13,7 @@ def load_environment(
     eval_examples: int = 24,
     windows: int = 8,
     window_days: int = 42,
+    dataset: str = "synthetic",
     data_path: str | None = None,
 ) -> vf.Environment:
     """Load Gate Runner's single-turn strategy-design environment."""
@@ -23,11 +24,16 @@ def load_environment(
     if window_days < 20:
         raise ValueError("window_days must be at least 20")
 
-    market = (
-        MarketData.from_csv(Path(data_path))
-        if data_path is not None
-        else MarketData.synthetic(seed=seed)
-    )
+    if data_path is not None:
+        if dataset != "synthetic":
+            raise ValueError("data_path and a non-default dataset cannot be combined")
+        market = MarketData.from_csv(Path(data_path))
+    elif dataset == "synthetic":
+        market = MarketData.synthetic(seed=seed)
+    elif dataset == "ecb_fx":
+        market = MarketData.ecb_fx()
+    else:
+        raise ValueError("dataset must be 'synthetic' or 'ecb_fx'")
     task_factory = TaskDatasetFactory(
         market=market,
         windows=windows,

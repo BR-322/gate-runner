@@ -28,14 +28,15 @@ requires both `DSR > 0.90` and `PBO < 0.25`.
 
 ## Current status
 
-- The environment, strategy schema, synthetic benchmark panel, walk-forward
-  backtester, DSR/PBO scorer, and deterministic regression suite are implemented.
+- The environment, strategy schema, synthetic benchmark panel, bundled ECB FX
+  profile, walk-forward backtester, DSR/PBO scorer, and deterministic regression
+  suite are implemented.
 - The signature test ranks a noisy short-horizon breakout below a parsimonious
   momentum strategy.
 - Local Prime installation and a 5-example × 3-rollout live smoke evaluation
   succeed.
-- A separately licensed public-market dataset and multi-model baseline report
-  are the next release milestone.
+- The next release milestone is the multi-model baseline report on the public
+  ECB profile.
 
 The synthetic panel is a deterministic test fixture, not evidence of real-world
 investment performance.
@@ -50,6 +51,15 @@ Install and evaluate the public Hub environment:
 ```bash
 prime env install br-322/gate-runner --plain
 prime eval run br-322/gate-runner
+```
+
+Those commands use the deterministic synthetic panel. To run a real-data
+preflight on the bundled ECB profile:
+
+```bash
+prime eval run br-322/gate-runner \
+  -a '{"dataset":"ecb_fx","eval_examples":200}' \
+  -n 20 -r 3
 ```
 
 For development from this checkout, install the local environment instead:
@@ -76,6 +86,7 @@ environments/gate_runner/
 ├── gate_runner_core/
 │   ├── config.py              # Strict strategy schema and parser
 │   ├── market.py              # Market panels and point-in-time task builder
+│   ├── data/                  # Pinned source-standard ECB API snapshot
 │   ├── rubric.py              # Group reward and logged metrics
 │   └── scoring.py             # Backtester, DSR, CSCV/PBO, shaped reward
 ├── tests/test_gate_runner.py  # Deterministic and signature tests
@@ -92,12 +103,19 @@ metadata as needed. Never put a credential value in either file.
 
 ## Data policy
 
-No third-party market history is currently committed. The default environment
-generates a deterministic 22-asset panel, and `data_path` can load a caller-owned
-rectangular CSV with `date,symbol,close` plus optional `high,low,volume` columns.
+The default environment generates a deterministic 22-asset panel. The optional
+`ecb_fx` profile uses a pinned, source-standard ECB API export containing 29
+daily euro reference-rate series from 2009 through 2024. The package filters
+holiday rows at runtime without changing source observation values and clearly
+labels its generated 5 bps spread proxy.
 
-Public releases must include only data with explicit redistribution terms,
-source attribution, and a reproducible provenance record. Put private or
+The ECB source snapshot remains subject to the ECB's reuse terms; Gate Runner's
+Apache-2.0 license covers the project code and does not relicense the data. See
+the [data provenance record](environments/gate_runner/DATA_PROVENANCE.md) for the
+query, checksums, exact processing, attribution, and limitations.
+
+`data_path` can also load a caller-owned rectangular CSV with
+`date,symbol,close` plus optional `high,low,volume` columns. Put private or
 experimental downloads in `data-local/`; that directory is ignored.
 
 See the [environment documentation](environments/gate_runner/README.md) for the

@@ -6,7 +6,7 @@ import pytest
 
 from gate_runner import load_environment
 from gate_runner_core.config import StrategyParser
-from gate_runner_core.market import MarketData
+from gate_runner_core.market import ECB_FX_CURRENCIES, MarketData, TaskDatasetFactory
 from gate_runner_core.scoring import (
     DeflatedSharpeRatio,
     HonestScorer,
@@ -75,6 +75,28 @@ def test_market_brief_is_strictly_point_in_time() -> None:
         source_label="future-mutated test panel",
     )
     assert altered.feature_snapshot(as_of_index) == original
+
+
+def test_bundled_ecb_fx_snapshot_is_complete_and_supports_p3_scale() -> None:
+    market = MarketData.ecb_fx()
+    assert market.dates[0] == "2009-01-02"
+    assert market.dates[-1] == "2024-12-31"
+    assert market.close.shape == (4_098, len(ECB_FX_CURRENCIES))
+    assert market.symbols == tuple(
+        f"EUR{currency}" for currency in ECB_FX_CURRENCIES
+    )
+    assert np.all(np.isfinite(market.close))
+    assert np.all(market.close > 0)
+    assert np.all(market.spread_bps == 5.0)
+
+    train_dataset, eval_dataset = TaskDatasetFactory(
+        market=market,
+        windows=8,
+        window_days=42,
+        seed=17,
+    ).build(train_examples=400, eval_examples=200)
+    assert len(train_dataset) == 400
+    assert len(eval_dataset) == 200
 
 
 def test_dsr_deflates_the_same_returns_as_trial_count_grows() -> None:

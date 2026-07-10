@@ -5,8 +5,10 @@ model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 num_examples = 20
 rollouts_per_example = 3
 max_tokens = 2048
+# Raise num_examples to 200 after the preflight passes sample inspection.
 
 [[eval]]
 env_id = "br-322/gate-runner"
+env_args = { dataset = "ecb_fx", eval_examples = 200 }
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

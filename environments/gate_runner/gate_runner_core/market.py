@@ -1,4 +1,6 @@
 import csv
+import gzip
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -8,6 +10,42 @@ import numpy as np
 from datasets import Dataset
 
 from gate_runner_core.config import StrategyParser
+
+
+ECB_FX_CURRENCIES = (
+    "AUD",
+    "BGN",
+    "BRL",
+    "CAD",
+    "CHF",
+    "CNY",
+    "CZK",
+    "DKK",
+    "GBP",
+    "HKD",
+    "HUF",
+    "IDR",
+    "ILS",
+    "INR",
+    "JPY",
+    "KRW",
+    "MXN",
+    "MYR",
+    "NOK",
+    "NZD",
+    "PHP",
+    "PLN",
+    "RON",
+    "SEK",
+    "SGD",
+    "THB",
+    "TRY",
+    "USD",
+    "ZAR",
+)
+ECB_FX_SNAPSHOT_SHA256 = (
+    "2e39da0d83bfbdb6d0575b1e481f2094ea974018b33473785d9349e2d04d7f3f"
+)
 
 
 @dataclass(frozen=True)
@@ -102,6 +140,103 @@ class MarketData:
             close=close,
             spread_bps=spread_bps,
             source_label=f"deterministic synthetic panel (seed={seed})",
+        )
+
+    @classmethod
+    def ecb_fx(cls) -> "MarketData":
+        """Load the bundled, source-standard ECB reference-rate snapshot."""
+        snapshot_path = (
+            Path(__file__).parent
+            / "data"
+            / "ecb_exr_reference_29_2009_2024.csv.gz"
+        )
+        if not snapshot_path.is_file():
+            raise ValueError(f"ECB FX snapshot is not a file: {snapshot_path}")
+        snapshot_sha256 = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+        if snapshot_sha256 != ECB_FX_SNAPSHOT_SHA256:
+            raise ValueError("ECB FX snapshot checksum does not match provenance")
+
+        series: dict[str, dict[str, float]] = {
+            currency: {} for currency in ECB_FX_CURRENCIES
+        }
+        with gzip.open(
+            snapshot_path,
+            mode="rt",
+            newline="",
+            encoding="utf-8-sig",
+        ) as handle:
+            reader = csv.DictReader(handle)
+            required = {
+                "FREQ",
+                "CURRENCY",
+                "CURRENCY_DENOM",
+                "EXR_TYPE",
+                "EXR_SUFFIX",
+                "TIME_PERIOD",
+                "OBS_VALUE",
+                "OBS_STATUS",
+                "TITLE_COMPL",
+            }
+            if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+                raise ValueError("ECB FX snapshot is missing required source columns")
+            for row in reader:
+                currency = row["CURRENCY"]
+                if currency not in series:
+                    raise ValueError(f"unexpected currency in ECB FX snapshot: {currency}")
+                if (
+                    row["FREQ"] != "D"
+                    or row["CURRENCY_DENOM"] != "EUR"
+                    or row["EXR_TYPE"] != "SP00"
+                    or row["EXR_SUFFIX"] != "A"
+                    or not row["TITLE_COMPL"].startswith(
+                        "ECB reference exchange rate"
+                    )
+                ):
+                    raise ValueError("ECB FX snapshot contains an unexpected series")
+                if not row["OBS_VALUE"]:
+                    if row["OBS_STATUS"] != "H":
+                        raise ValueError("ECB FX snapshot contains an empty non-holiday row")
+                    continue
+                if row["OBS_STATUS"] != "A":
+                    raise ValueError("ECB FX snapshot contains a non-final observation")
+                observation_date = row["TIME_PERIOD"]
+                if observation_date in series[currency]:
+                    raise ValueError(
+                        f"duplicate ECB FX row for {observation_date} / {currency}"
+                    )
+                series[currency][observation_date] = float(row["OBS_VALUE"])
+
+        date_sets = [set(series[currency]) for currency in ECB_FX_CURRENCIES]
+        if any(not values for values in date_sets):
+            raise ValueError("ECB FX snapshot is missing a configured currency")
+        common_dates = set.intersection(*date_sets)
+        if any(values != common_dates for values in date_sets):
+            raise ValueError("ECB FX snapshot does not form a rectangular panel")
+        dates = tuple(sorted(common_dates))
+        if (
+            len(dates) != 4_098
+            or dates[0] != "2009-01-02"
+            or dates[-1] != "2024-12-31"
+        ):
+            raise ValueError("ECB FX snapshot does not match the pinned 2009-2024 panel")
+
+        symbols = tuple(f"EUR{currency}" for currency in ECB_FX_CURRENCIES)
+        close = np.asarray(
+            [
+                [series[currency][observation_date] for currency in ECB_FX_CURRENCIES]
+                for observation_date in dates
+            ],
+            dtype=float,
+        )
+        return cls(
+            dates=dates,
+            symbols=symbols,
+            close=close,
+            spread_bps=np.full_like(close, 5.0),
+            source_label=(
+                "ECB daily euro foreign exchange reference rates "
+                "(2009-2024; source values unmodified)"
+            ),
         )
 
     @classmethod
