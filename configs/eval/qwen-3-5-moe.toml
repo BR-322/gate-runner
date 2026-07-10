@@ -1,0 +1,13 @@
+# Qwen3.5 MoE models. Uncomment exactly one model.
+model = "Qwen/Qwen3.5-35B-A3B"
+# model = "Qwen/Qwen3.5-122B-A10B"
+# model = "Qwen/Qwen3.5-397B-A17B"
+
+num_examples = 20
+rollouts_per_example = 3
+max_tokens = 2048
+
+[[eval]]
+env_id = "gate-runner"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

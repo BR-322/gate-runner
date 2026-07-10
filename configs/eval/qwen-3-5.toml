@@ -1,0 +1,14 @@
+# Qwen3.5 dense models. Uncomment exactly one model.
+# model = "Qwen/Qwen3.5-0.8B"
+# model = "Qwen/Qwen3.5-2B"
+model = "Qwen/Qwen3.5-4B"
+# model = "Qwen/Qwen3.5-9B"
+
+num_examples = 20
+rollouts_per_example = 3
+max_tokens = 1024
+
+[[eval]]
+env_id = "gate-runner"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

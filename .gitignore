@@ -1,0 +1,62 @@
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials*.json
+service-account*.json
+.netrc
+.kaggle/
+/configs/endpoints.toml
+/configs/endpoints.local.toml
+
+# Local market data and downloads
+/data-local/
+/downloads/
+/environments/*/data-local/
+
+# Prime Lab generated artifacts
+/AGENTS.md
+/CLAUDE.md
+/CLAUDE.local.md
+/.prime/
+/.agents/skills/
+/.claude/skills/
+/.cursor/skills/
+/.factory/skills/
+/.opencode/skills/
+/.pi/skills/
+/outputs/
+/prime-rl/
+/environments/AGENTS.md
+/environments/*/outputs/
+/environments/*/dist/
+/environments/*/*.egg-info/
+/environments/*/__pycache__/
+
+# Python environments, caches, and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Editors, operating systems, and logs
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*.log

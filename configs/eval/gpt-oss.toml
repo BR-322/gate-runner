@@ -1,0 +1,12 @@
+# gpt-oss models. Uncomment exactly one model.
+model = "openai/gpt-oss-20b"
+# model = "openai/gpt-oss-120b"
+
+num_examples = 20
+rollouts_per_example = 3
+max_tokens = 1024
+
+[[eval]]
+env_id = "gate-runner"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

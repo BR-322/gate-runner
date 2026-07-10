@@ -1,0 +1,8 @@
+# Copy this file to configs/endpoints.toml for machine-local endpoint aliases.
+# `key` names an environment variable; never place the credential itself here.
+
+[[endpoint]]
+endpoint_id = "prime-gpt-4.1-mini"
+model = "openai/gpt-4.1-mini"
+url = "https://api.pinference.ai/api/v1"
+key = "PRIME_API_KEY"
