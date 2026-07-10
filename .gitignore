@@ -33,6 +33,7 @@ service-account*.json
 /outputs/
 /prime-rl/
 /environments/AGENTS.md
+/environments/*/.prime/
 /environments/*/outputs/
 /environments/*/dist/
 /environments/*/*.egg-info/
