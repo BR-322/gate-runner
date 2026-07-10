@@ -7,6 +7,8 @@ model = "Qwen/Qwen3.5-4B"
 num_examples = 20
 rollouts_per_example = 3
 max_tokens = 1024
+temperature = 0.7
+sampling_args = { extra_body = { chat_template_kwargs = { enable_thinking = false } } }
 # Raise num_examples to 200 after the preflight passes sample inspection.
 
 [[eval]]

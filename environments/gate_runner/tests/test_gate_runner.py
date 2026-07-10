@@ -59,6 +59,17 @@ def test_parser_accepts_only_one_schema_clean_json_object() -> None:
         StrategyParser.parse(json.dumps(extra_key))
 
 
+def test_prompt_contract_is_valid_json_without_range_placeholders() -> None:
+    example = StrategyParser.parse(StrategyParser.ACTION_CONTRACT)
+    assert example.entry.type == "channel_breakout"
+    assert ".." not in StrategyParser.ACTION_CONTRACT
+
+    prompt = MarketData.synthetic(seed=17).render_prompt(as_of_index=1_500)
+    assert "deliberately inactive syntax example" in prompt
+    assert 'entry.type exactly "momentum_threshold"' in prompt
+    assert "aliases and alternative layouts are invalid" in prompt
+
+
 def test_market_brief_is_strictly_point_in_time() -> None:
     market = MarketData.synthetic(seed=17)
     as_of_index = 1_500

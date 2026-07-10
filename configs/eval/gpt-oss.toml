@@ -5,6 +5,7 @@ model = "openai/gpt-oss-20b"
 num_examples = 20
 rollouts_per_example = 3
 max_tokens = 1024
+temperature = 0.7
 # Raise num_examples to 200 after the preflight passes sample inspection.
 
 [[eval]]

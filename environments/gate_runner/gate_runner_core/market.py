@@ -373,8 +373,13 @@ class MarketData:
         )
         lines.extend(
             [
-                "Return exactly one JSON object matching this contract:",
+                (
+                    "Return exactly one JSON object. The object below is a "
+                    "deliberately inactive syntax example, not a recommended "
+                    "strategy. Choose types and parameters for the market brief."
+                ),
                 StrategyParser.ACTION_CONTRACT,
+                StrategyParser.ACTION_RULES,
                 "Do not include markdown fences, commentary, NaN, Infinity, extra keys, or multiple objects.",
             ]
         )

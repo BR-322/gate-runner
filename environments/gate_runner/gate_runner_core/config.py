@@ -85,17 +85,36 @@ class StrategyConfig(StrictModel):
 
 class StrategyParser:
     ACTION_CONTRACT = """{
-  "entry":
-    {"type":"momentum_threshold","lookback_days":20..252,"threshold":-0.10..0.30}
-    OR {"type":"mean_reversion_zscore","lookback_days":10..120,"entry_z":0.50..3.00}
-    OR {"type":"channel_breakout","lookback_days":10..252,"buffer_pct":0.00..0.05,"confirmation_days":1..5},
-  "exit":
-    {"type":"stop_loss_pct","stop_pct":0.02..0.25}
-    OR {"type":"trailing_stop","trail_pct":0.02..0.25}
-    OR {"type":"time_exit","max_holding_days":3..126},
-  "universe_filter":{"side":"top" OR "bottom","k":1..10},
-  "sizing":{"method":"equal_weight","max_positions":1..5}
+  "entry": {
+    "type": "channel_breakout",
+    "lookback_days": 252,
+    "buffer_pct": 0.05,
+    "confirmation_days": 5
+  },
+  "exit": {
+    "type": "trailing_stop",
+    "trail_pct": 0.25
+  },
+  "universe_filter": {
+    "side": "top",
+    "k": 1
+  },
+  "sizing": {
+    "method": "equal_weight",
+    "max_positions": 1
+  }
 }"""
+
+    ACTION_RULES = """Use these property and type names verbatim; aliases and alternative layouts are invalid.
+Allowed choices and inclusive bounds:
+- entry.type exactly "momentum_threshold": lookback_days integer 20 to 252; threshold number -0.10 to 0.30
+- entry.type exactly "mean_reversion_zscore": lookback_days integer 10 to 120; entry_z number 0.50 to 3.00
+- entry.type exactly "channel_breakout": lookback_days integer 10 to 252; buffer_pct number 0.00 to 0.05; confirmation_days integer 1 to 5
+- exit.type exactly "stop_loss_pct": stop_pct number 0.02 to 0.25
+- exit.type exactly "trailing_stop": trail_pct number 0.02 to 0.25
+- exit.type exactly "time_exit": max_holding_days integer 3 to 126
+- universe_filter: side exactly "top" or "bottom"; k integer 1 to 10
+- sizing: method exactly "equal_weight"; max_positions integer 1 to 5"""
 
     @classmethod
     def parse(cls, text: str) -> StrategyConfig:
