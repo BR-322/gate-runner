@@ -22,6 +22,8 @@ class BacktestResult:
     window_sharpes: np.ndarray
     raw_sharpe: float
     turnover: float
+    active_fraction: float
+    active_windows: int
 
 
 @dataclass(frozen=True)
@@ -31,11 +33,14 @@ class HonestScore:
     raw_sharpe: float = 0.0
     dsr: float = 0.0
     pbo: float = 0.0
+    pbo_contribution: float = 0.0
     complexity: float = 0.0
     parameter_count: float = 0.0
     trial_count: float = 0.0
     passed: float = 0.0
     turnover: float = 0.0
+    active_fraction: float = 0.0
+    active_windows: float = 0.0
 
     def metrics(self) -> dict[str, float]:
         return {key: float(value) for key, value in asdict(self).items()}
@@ -67,24 +72,32 @@ class StrategyBacktester:
         all_returns: list[np.ndarray] = []
         window_sharpes: list[float] = []
         total_turnover = 0.0
+        total_active_days = 0
+        active_windows = 0
         for window_index in range(self.windows):
             start = as_of_index + window_index * self.window_days
             end = start + self.window_days
-            window_returns, turnover = self._run_window(strategy, start, end)
+            window_returns, turnover, active_days = self._run_window(
+                strategy, start, end
+            )
             all_returns.append(window_returns)
             window_sharpes.append(self.annualized_sharpe(window_returns))
             total_turnover += turnover
+            total_active_days += active_days
+            active_windows += int(active_days > 0)
         daily_returns = np.concatenate(all_returns)
         return BacktestResult(
             daily_returns=daily_returns,
             window_sharpes=np.asarray(window_sharpes, dtype=float),
             raw_sharpe=self.annualized_sharpe(daily_returns),
             turnover=total_turnover,
+            active_fraction=total_active_days / (self.windows * self.window_days),
+            active_windows=active_windows,
         )
 
     def _run_window(
         self, strategy: StrategyConfig, start: int, end: int
-    ) -> tuple[np.ndarray, float]:
+    ) -> tuple[np.ndarray, float, int]:
         symbol_count = len(self.market.symbols)
         active = np.zeros(symbol_count, dtype=bool)
         entry_price = np.zeros(symbol_count, dtype=float)
@@ -93,6 +106,7 @@ class StrategyBacktester:
         previous_weights = np.zeros(symbol_count, dtype=float)
         daily_returns = np.zeros(end - start, dtype=float)
         total_turnover = 0.0
+        active_days = 0
 
         for offset, day_index in enumerate(range(start, end)):
             prior_index = day_index - 1
@@ -128,6 +142,7 @@ class StrategyBacktester:
             active_count = int(np.count_nonzero(active))
             if active_count:
                 weights[active] = 1.0 / active_count
+                active_days += 1
 
             traded_weight = np.abs(weights - previous_weights)
             per_side_cost = (
@@ -159,7 +174,7 @@ class StrategyBacktester:
             )
             daily_returns[-1] = max(-0.99, daily_returns[-1] - liquidation_cost)
             total_turnover += float(np.sum(previous_weights))
-        return daily_returns, total_turnover
+        return daily_returns, total_turnover, active_days
 
     @staticmethod
     def _apply_exits(
@@ -281,70 +296,149 @@ class DeflatedSharpeRatio:
 
 
 class ProbabilityBacktestOverfitting:
+    @classmethod
+    def estimate(cls, window_scores: np.ndarray) -> float:
+        probability, _ = cls.decompose(window_scores)
+        return probability
+
     @staticmethod
-    def estimate(window_scores: np.ndarray) -> float:
+    def decompose(window_scores: np.ndarray) -> tuple[float, np.ndarray]:
         scores = np.asarray(window_scores, dtype=float)
         if scores.ndim != 2:
             raise ValueError("window_scores must be strategies x windows")
         strategy_count, window_count = scores.shape
         if strategy_count < 2 or window_count < 4 or window_count % 2:
-            return 0.0
+            return 0.0, np.zeros(strategy_count, dtype=float)
 
         losses: list[float] = []
+        contributions = np.zeros(strategy_count, dtype=float)
         all_windows = set(range(window_count))
         for in_sample in combinations(range(window_count), window_count // 2):
             out_of_sample = tuple(sorted(all_windows.difference(in_sample)))
             in_performance = np.mean(scores[:, in_sample], axis=1)
-            winner = int(np.argmax(in_performance))
             out_performance = np.mean(scores[:, out_of_sample], axis=1)
-            winner_value = out_performance[winner]
-            lower = float(np.sum(out_performance < winner_value))
-            equal = float(np.sum(np.isclose(out_performance, winner_value))) - 1.0
-            average_rank = 1.0 + lower + max(0.0, equal) / 2.0
-            relative_rank = average_rank / (strategy_count + 1.0)
-            losses.append(1.0 if relative_rank <= 0.5 else 0.0)
-        return float(np.mean(losses)) if losses else 0.0
+            winners = np.flatnonzero(
+                np.isclose(in_performance, np.max(in_performance))
+            )
+            split_losses: list[float] = []
+            for winner in winners:
+                winner_value = out_performance[winner]
+                lower = float(np.sum(out_performance < winner_value))
+                equal = (
+                    float(np.sum(np.isclose(out_performance, winner_value))) - 1.0
+                )
+                average_rank = 1.0 + lower + max(0.0, equal) / 2.0
+                relative_rank = average_rank / (strategy_count + 1.0)
+                split_losses.append(float(relative_rank <= 0.5))
+            split_loss = float(np.mean(split_losses))
+            losses.append(split_loss)
+            contributions[winners] += np.asarray(split_losses) / len(winners)
+        if not losses:
+            return 0.0, contributions
+        return float(np.mean(losses)), contributions / len(losses)
 
 
 class HonestScorer:
     DSR_PASS_THRESHOLD = 0.90
     PBO_PASS_THRESHOLD = 0.25
+    MIN_ACTIVE_FRACTION = 0.10
+    MIN_ACTIVE_WINDOWS = 4
 
-    def __init__(
-        self,
-        backtester: StrategyBacktester,
-        dsr_weight: float = 0.70,
-        pbo_weight: float = 0.20,
-        complexity_weight: float = 0.05,
-        validity_weight: float = 0.10,
-        pass_bonus: float = 0.06,
-    ) -> None:
+    VALID_FLOOR = 0.10
+    FAIL_PROXIMITY_SPAN = 0.35
+    PASS_FLOOR = 0.60
+    PASS_ROBUSTNESS_SPAN = 0.30
+    PBO_ATTRIBUTION_WEIGHT = 0.03
+    COMPLEXITY_WEIGHT = 0.01
+    MIN_COMPLEXITY = 5.0 / 8.0
+    MAX_COMPLEXITY = 6.0 / 8.0
+
+    def __init__(self, backtester: StrategyBacktester) -> None:
         self.backtester = backtester
-        self.dsr_weight = dsr_weight
-        self.pbo_weight = pbo_weight
-        self.complexity_weight = complexity_weight
-        self.validity_weight = validity_weight
-        self.pass_bonus = pass_bonus
         self._cache: dict[tuple[int, str], BacktestResult] = {}
 
     @classmethod
-    def _passes_gate(cls, dsr: float, pbo: float) -> bool:
-        return dsr > cls.DSR_PASS_THRESHOLD and pbo < cls.PBO_PASS_THRESHOLD
+    def _passes_gate(
+        cls,
+        dsr: float,
+        pbo: float,
+        active_fraction: float,
+        active_windows: float,
+    ) -> bool:
+        return (
+            dsr > cls.DSR_PASS_THRESHOLD
+            and pbo < cls.PBO_PASS_THRESHOLD
+            and active_fraction >= cls.MIN_ACTIVE_FRACTION
+            and active_windows >= cls.MIN_ACTIVE_WINDOWS
+        )
 
     def _shaped_reward(
         self,
         dsr: float,
         pbo: float,
         complexity: float,
+        pbo_contribution: float,
+        mean_pbo_contribution: float,
+        active_fraction: float,
+        active_windows: float,
     ) -> float:
-        passed = self._passes_gate(dsr, pbo)
-        reward = (
-            self.dsr_weight * np.tanh(dsr)
-            - self.pbo_weight * pbo
-            - self.complexity_weight * complexity
-            + self.validity_weight
-            + self.pass_bonus * float(passed)
+        passed = self._passes_gate(
+            dsr, pbo, active_fraction, active_windows
         )
+
+        if passed:
+            dsr_margin = np.clip(
+                (dsr - self.DSR_PASS_THRESHOLD)
+                / (1.0 - self.DSR_PASS_THRESHOLD),
+                0.0,
+                1.0,
+            )
+            pbo_margin = np.clip(
+                (self.PBO_PASS_THRESHOLD - pbo) / self.PBO_PASS_THRESHOLD,
+                0.0,
+                1.0,
+            )
+            robustness = min(float(dsr_margin), float(pbo_margin))
+            reward = self.PASS_FLOOR + self.PASS_ROBUSTNESS_SPAN * robustness
+        else:
+            violations = (
+                np.clip(
+                    (self.DSR_PASS_THRESHOLD - dsr) / self.DSR_PASS_THRESHOLD,
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    (pbo - self.PBO_PASS_THRESHOLD)
+                    / (1.0 - self.PBO_PASS_THRESHOLD),
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    (self.MIN_ACTIVE_FRACTION - active_fraction)
+                    / self.MIN_ACTIVE_FRACTION,
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    (self.MIN_ACTIVE_WINDOWS - active_windows)
+                    / self.MIN_ACTIVE_WINDOWS,
+                    0.0,
+                    1.0,
+                ),
+            )
+            proximity = 1.0 - max(float(value) for value in violations)
+            reward = self.VALID_FLOOR + self.FAIL_PROXIMITY_SPAN * proximity
+
+        reward += self.PBO_ATTRIBUTION_WEIGHT * (
+            mean_pbo_contribution - pbo_contribution
+        )
+        complexity_excess = np.clip(
+            (complexity - self.MIN_COMPLEXITY)
+            / (self.MAX_COMPLEXITY - self.MIN_COMPLEXITY),
+            0.0,
+            1.0,
+        )
+        reward -= self.COMPLEXITY_WEIGHT * float(complexity_excess)
         return float(np.clip(reward, -1.0, 1.0))
 
     def score_group(
@@ -367,12 +461,15 @@ class HonestScorer:
             backtests.append(result)
             valid_results.append(result)
 
-        pbo = (
-            ProbabilityBacktestOverfitting.estimate(
+        if valid_results:
+            pbo, pbo_contributions = ProbabilityBacktestOverfitting.decompose(
                 np.vstack([result.window_sharpes for result in valid_results])
             )
-            if valid_results
-            else 0.0
+        else:
+            pbo = 0.0
+            pbo_contributions = np.asarray([], dtype=float)
+        mean_pbo_contribution = (
+            float(np.mean(pbo_contributions)) if len(pbo_contributions) else 0.0
         )
         trial_daily_sharpes = np.asarray(
             [result.raw_sharpe / np.sqrt(252.0) for result in valid_results],
@@ -384,18 +481,34 @@ class HonestScorer:
             else None
         )
         scores: list[HonestScore] = []
+        valid_index = 0
         for strategy, result in zip(strategies, backtests):
             if strategy is None or result is None:
                 scores.append(HonestScore(trial_count=float(trial_count)))
                 continue
+            pbo_contribution = float(pbo_contributions[valid_index])
+            valid_index += 1
             dsr = DeflatedSharpeRatio.probability(
                 result.daily_returns,
                 trials=trial_count,
                 trial_sharpe_std=trial_sharpe_std,
             )
             complexity = strategy.normalized_complexity
-            passed = self._passes_gate(dsr, pbo)
-            reward = self._shaped_reward(dsr, pbo, complexity)
+            passed = self._passes_gate(
+                dsr,
+                pbo,
+                result.active_fraction,
+                result.active_windows,
+            )
+            reward = self._shaped_reward(
+                dsr=dsr,
+                pbo=pbo,
+                complexity=complexity,
+                pbo_contribution=pbo_contribution,
+                mean_pbo_contribution=mean_pbo_contribution,
+                active_fraction=result.active_fraction,
+                active_windows=result.active_windows,
+            )
             scores.append(
                 HonestScore(
                     reward=reward,
@@ -403,11 +516,14 @@ class HonestScorer:
                     raw_sharpe=result.raw_sharpe,
                     dsr=dsr,
                     pbo=pbo,
+                    pbo_contribution=pbo_contribution,
                     complexity=complexity,
                     parameter_count=float(strategy.parameter_count),
                     trial_count=float(trial_count),
                     passed=float(passed),
                     turnover=result.turnover,
+                    active_fraction=result.active_fraction,
+                    active_windows=float(result.active_windows),
                 )
             )
         return scores

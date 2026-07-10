@@ -23,9 +23,11 @@ grade:
 - a strict point-in-time boundary keeps future data out of the prompt; and
 - costs and a small complexity penalty discourage fragile, high-turnover rules.
 
-The training reward keeps continuous DSR, PBO, validity, and complexity shaping,
-then adds a small conjunctive gate bonus when both `DSR > 0.90` and
-`PBO < 0.25`. The same condition is logged as the `passed` metric.
+The training reward has three monotone zones: valid failures climb by closing
+their worst normalized gate violation; crossing every gate produces a hard
+reward jump; and passes keep climbing by improving their weaker DSR/PBO safety
+margin. Per-strategy CSCV loss attribution makes the group PBO objective
+learnable under group-relative training.
 
 ## Current status
 
@@ -34,8 +36,8 @@ then adds a small conjunctive gate bonus when both `DSR > 0.90` and
   suite are implemented.
 - The signature test ranks a noisy short-horizon breakout below a parsimonious
   momentum strategy.
-- Local Prime installation and a 5-example × 3-rollout live smoke evaluation
-  succeed.
+- Local Prime installation and a 20-example × 3-rollout ECB/Qwen 4B preflight
+  succeed with dense within-group reward variation.
 - The next release milestone is the multi-model baseline report on the public
   ECB profile.
 

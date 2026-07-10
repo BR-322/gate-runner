@@ -12,11 +12,14 @@ class HonestRubric(vf.Rubric):
         "raw_sharpe",
         "dsr",
         "pbo",
+        "pbo_contribution",
         "complexity",
         "parameter_count",
         "trial_count",
         "passed",
         "turnover",
+        "active_fraction",
+        "active_windows",
     )
 
     def __init__(self, scorer: HonestScorer) -> None:

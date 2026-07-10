@@ -126,7 +126,16 @@ def test_cscv_detects_a_split_selected_overfit_strategy() -> None:
             [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
         ]
     )
-    assert ProbabilityBacktestOverfitting.estimate(window_scores) > 0.40
+    pbo, contributions = ProbabilityBacktestOverfitting.decompose(window_scores)
+    assert pbo > 0.40
+    assert np.sum(contributions) == pytest.approx(pbo)
+
+
+def test_cscv_splits_loss_credit_across_tied_winners() -> None:
+    tied_scores = np.ones((2, 8), dtype=float)
+    pbo, contributions = ProbabilityBacktestOverfitting.decompose(tied_scores)
+    assert contributions[0] == pytest.approx(contributions[1])
+    assert np.sum(contributions) == pytest.approx(pbo)
 
 
 def test_signature_overfit_config_scores_below_parsimonious_config() -> None:
@@ -142,7 +151,7 @@ def test_signature_overfit_config_scores_below_parsimonious_config() -> None:
     assert honest_score.reward > overfit_score.reward + 0.10
 
 
-def test_gate_bonus_makes_every_pass_outrank_the_best_nonpass() -> None:
+def test_reward_tiers_make_every_pass_outrank_the_best_nonpass() -> None:
     scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
     least_complex = 5.0 / 8.0
     most_complex = 6.0 / 8.0
@@ -151,19 +160,96 @@ def test_gate_bonus_makes_every_pass_outrank_the_best_nonpass() -> None:
         dsr=np.nextafter(scorer.DSR_PASS_THRESHOLD, 1.0),
         pbo=np.nextafter(scorer.PBO_PASS_THRESHOLD, 0.0),
         complexity=most_complex,
+        pbo_contribution=1.0,
+        mean_pbo_contribution=0.0,
+        active_fraction=scorer.MIN_ACTIVE_FRACTION,
+        active_windows=scorer.MIN_ACTIVE_WINDOWS,
     )
     best_dsr_failure = scorer._shaped_reward(
         dsr=scorer.DSR_PASS_THRESHOLD,
         pbo=0.0,
         complexity=least_complex,
+        pbo_contribution=0.0,
+        mean_pbo_contribution=1.0,
+        active_fraction=1.0,
+        active_windows=8,
     )
     best_pbo_failure = scorer._shaped_reward(
         dsr=1.0,
         pbo=scorer.PBO_PASS_THRESHOLD,
         complexity=least_complex,
+        pbo_contribution=0.0,
+        mean_pbo_contribution=1.0,
+        active_fraction=1.0,
+        active_windows=8,
     )
 
     assert worst_pass > max(best_dsr_failure, best_pbo_failure)
+
+
+def test_fail_tier_rewards_only_the_binding_gate_gap() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    common = {
+        "complexity": scorer.MIN_COMPLEXITY,
+        "pbo_contribution": 0.0,
+        "mean_pbo_contribution": 0.0,
+        "active_fraction": 1.0,
+        "active_windows": 8,
+    }
+
+    pbo_binding = scorer._shaped_reward(dsr=0.91, pbo=0.80, **common)
+    pbo_binding_with_perfect_dsr = scorer._shaped_reward(
+        dsr=1.0, pbo=0.80, **common
+    )
+    closer_pbo = scorer._shaped_reward(dsr=1.0, pbo=0.40, **common)
+    dsr_binding = scorer._shaped_reward(dsr=0.50, pbo=0.20, **common)
+    dsr_binding_with_perfect_pbo = scorer._shaped_reward(
+        dsr=0.50, pbo=0.0, **common
+    )
+
+    assert pbo_binding == pytest.approx(pbo_binding_with_perfect_dsr)
+    assert closer_pbo > pbo_binding
+    assert dsr_binding == pytest.approx(dsr_binding_with_perfect_pbo)
+
+
+def test_pass_tier_rewards_the_weaker_robustness_margin() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    common = {
+        "complexity": scorer.MIN_COMPLEXITY,
+        "pbo_contribution": 0.0,
+        "mean_pbo_contribution": 0.0,
+        "active_fraction": 1.0,
+        "active_windows": 8,
+    }
+
+    gate_tap = scorer._shaped_reward(dsr=0.91, pbo=0.24, **common)
+    perfect_dsr_same_pbo = scorer._shaped_reward(dsr=1.0, pbo=0.24, **common)
+    robust_pass = scorer._shaped_reward(dsr=0.98, pbo=0.02, **common)
+
+    assert gate_tap == pytest.approx(perfect_dsr_same_pbo)
+    assert robust_pass > gate_tap
+
+
+def test_activity_gate_blocks_near_no_trade_strategies() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    assert not scorer._passes_gate(1.0, 0.0, 0.099, 8)
+    assert not scorer._passes_gate(1.0, 0.0, 1.0, 3)
+    assert scorer._passes_gate(1.0, 0.0, 0.10, 4)
+
+
+def test_pbo_attribution_penalizes_the_strategy_causing_selection_losses() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    common = {
+        "dsr": 0.70,
+        "pbo": 0.60,
+        "complexity": scorer.MIN_COMPLEXITY,
+        "mean_pbo_contribution": 0.20,
+        "active_fraction": 1.0,
+        "active_windows": 8,
+    }
+    helpful = scorer._shaped_reward(pbo_contribution=0.0, **common)
+    harmful = scorer._shaped_reward(pbo_contribution=0.40, **common)
+    assert helpful > harmful
 
 
 def test_invalid_completion_fails_closed_to_exactly_zero() -> None:

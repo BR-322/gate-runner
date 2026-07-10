@@ -21,16 +21,27 @@ penalty.
   at most five concurrent positions
 - **Costs:** 10 bps per traded side plus a per-symbol spread proxy
 - **Walk-forward horizon:** eight sequential 42-session windows by default
+- **Activity gate:** at least 10% active sessions across at least four grading
+  windows
 
 Malformed JSON, markdown-wrapped JSON, unknown keys, wrong primitive names, and
 out-of-range parameters receive exactly zero reward.
 
 ## Reward
 
-For every schema-valid config:
+Malformed output receives `0`. Every schema-valid config receives a dense score
+inside one of two non-overlapping tiers. Define normalized violations for the
+DSR, PBO, active-session, and active-window gates; then:
 
 ```text
-reward = 0.70*tanh(DSR) - 0.20*PBO - 0.05*complexity + 0.10*validity + 0.06*passed
+fail_proximity = 1 - max(normalized gate violations)
+fail_reward = 0.10 + 0.35*fail_proximity
+
+pass_robustness = min(normalized DSR margin, normalized PBO margin)
+pass_reward = 0.60 + 0.30*pass_robustness
+
+reward += 0.03*(mean PBO contribution - strategy PBO contribution)
+reward -= 0.01*complexity_excess
 ```
 
 - **DSR** is the Deflated Sharpe Ratio probability. Its expected-max-Sharpe
@@ -38,17 +49,21 @@ reward = 0.70*tanh(DSR) - 0.20*PBO - 0.05*complexity + 0.10*validity + 0.06*pass
   including invalid attempts, and the valid trials' Sharpe dispersion. A null
   standard error is used when fewer than two valid Sharpe estimates exist.
 - **PBO** uses combinatorially symmetric cross-validation across the sequential
-  windows and the valid configs in that episode group. It is `0` when fewer
-  than two valid configs exist because cross-strategy selection risk is then
-  undefined.
-- **complexity** is the active numeric parameter count normalized by eight.
-- **passed** is the conjunctive gate `DSR > 0.90` and `PBO < 0.25`. Its `0.06`
-  bonus is calibrated to make a passing config outrank the theoretical best
-  non-passing config under the schema's complexity bounds, while the continuous
-  terms still shape every valid rollout.
+  windows and valid configs in the episode group. Split losses are attributed
+  to the in-sample winner, divided evenly across ties, and sum back to group
+  PBO. Centering those contributions supplies per-strategy credit without
+  changing the headline group statistic. PBO is `0` when fewer than two valid
+  configs exist because cross-strategy selection risk is then undefined.
+- **complexity_excess** is `0` for five active numeric parameters and `1` for
+  six; its bounded penalty cannot overturn reward-tier ordering.
+- **passed** requires `DSR > 0.90`, `PBO < 0.25`, active positions on at least
+  10% of grading sessions, and activity in at least four of eight grading
+  windows. Activity is rewarded only until eligibility is reached, preventing
+  an incentive for gratuitous exposure or turnover.
 
-The rubric also logs `validity`, `raw_sharpe`, `dsr`, `pbo`, `complexity`,
-`parameter_count`, `trial_count`, `passed`, and `turnover`.
+The rubric also logs `validity`, `raw_sharpe`, `dsr`, `pbo`,
+`pbo_contribution`, `complexity`, `parameter_count`, `trial_count`, `passed`,
+`turnover`, `active_fraction`, and `active_windows`.
 
 Verifiers' generic `pass@k` display applies its own threshold to the shaped
 reward. Use the logged `passed` metric as the evaluation headline because it
