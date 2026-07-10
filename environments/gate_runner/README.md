@@ -30,7 +30,7 @@ out-of-range parameters receive exactly zero reward.
 For every schema-valid config:
 
 ```text
-reward = 0.70*tanh(DSR) - 0.20*PBO - 0.05*complexity + 0.10*validity
+reward = 0.70*tanh(DSR) - 0.20*PBO - 0.05*complexity + 0.10*validity + 0.06*passed
 ```
 
 - **DSR** is the Deflated Sharpe Ratio probability. Its expected-max-Sharpe
@@ -42,16 +42,17 @@ reward = 0.70*tanh(DSR) - 0.20*PBO - 0.05*complexity + 0.10*validity
   than two valid configs exist because cross-strategy selection risk is then
   undefined.
 - **complexity** is the active numeric parameter count normalized by eight.
-- **passed** is a headline metric, not a separate reward: `DSR > 0.90` and
-  `PBO < 0.25`.
+- **passed** is the conjunctive gate `DSR > 0.90` and `PBO < 0.25`. Its `0.06`
+  bonus is calibrated to make a passing config outrank the theoretical best
+  non-passing config under the schema's complexity bounds, while the continuous
+  terms still shape every valid rollout.
 
 The rubric also logs `validity`, `raw_sharpe`, `dsr`, `pbo`, `complexity`,
 `parameter_count`, `trial_count`, `passed`, and `turnover`.
 
-Verifiers' generic `pass@k` display thresholds the continuous shaped reward.
-Because Gate Runner's binary gate is a conjunction of DSR and PBO conditions,
-no single shaped-reward threshold is equivalent. Use the logged `passed` metric
-as the evaluation headline, not generic `pass@k`.
+Verifiers' generic `pass@k` display applies its own threshold to the shaped
+reward. Use the logged `passed` metric as the evaluation headline because it
+records Gate Runner's explicit DSR/PBO conjunction directly.
 
 ## Quickstart
 

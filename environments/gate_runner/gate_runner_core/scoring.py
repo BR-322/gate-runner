@@ -307,6 +307,9 @@ class ProbabilityBacktestOverfitting:
 
 
 class HonestScorer:
+    DSR_PASS_THRESHOLD = 0.90
+    PBO_PASS_THRESHOLD = 0.25
+
     def __init__(
         self,
         backtester: StrategyBacktester,
@@ -314,13 +317,35 @@ class HonestScorer:
         pbo_weight: float = 0.20,
         complexity_weight: float = 0.05,
         validity_weight: float = 0.10,
+        pass_bonus: float = 0.06,
     ) -> None:
         self.backtester = backtester
         self.dsr_weight = dsr_weight
         self.pbo_weight = pbo_weight
         self.complexity_weight = complexity_weight
         self.validity_weight = validity_weight
+        self.pass_bonus = pass_bonus
         self._cache: dict[tuple[int, str], BacktestResult] = {}
+
+    @classmethod
+    def _passes_gate(cls, dsr: float, pbo: float) -> bool:
+        return dsr > cls.DSR_PASS_THRESHOLD and pbo < cls.PBO_PASS_THRESHOLD
+
+    def _shaped_reward(
+        self,
+        dsr: float,
+        pbo: float,
+        complexity: float,
+    ) -> float:
+        passed = self._passes_gate(dsr, pbo)
+        reward = (
+            self.dsr_weight * np.tanh(dsr)
+            - self.pbo_weight * pbo
+            - self.complexity_weight * complexity
+            + self.validity_weight
+            + self.pass_bonus * float(passed)
+        )
+        return float(np.clip(reward, -1.0, 1.0))
 
     def score_group(
         self,
@@ -369,15 +394,11 @@ class HonestScorer:
                 trial_sharpe_std=trial_sharpe_std,
             )
             complexity = strategy.normalized_complexity
-            reward = (
-                self.dsr_weight * np.tanh(dsr)
-                - self.pbo_weight * pbo
-                - self.complexity_weight * complexity
-                + self.validity_weight
-            )
+            passed = self._passes_gate(dsr, pbo)
+            reward = self._shaped_reward(dsr, pbo, complexity)
             scores.append(
                 HonestScore(
-                    reward=float(np.clip(reward, -1.0, 1.0)),
+                    reward=reward,
                     validity=1.0,
                     raw_sharpe=result.raw_sharpe,
                     dsr=dsr,
@@ -385,7 +406,7 @@ class HonestScorer:
                     complexity=complexity,
                     parameter_count=float(strategy.parameter_count),
                     trial_count=float(trial_count),
-                    passed=1.0 if dsr > 0.90 and pbo < 0.25 else 0.0,
+                    passed=float(passed),
                     turnover=result.turnover,
                 )
             )

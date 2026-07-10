@@ -23,8 +23,9 @@ grade:
 - a strict point-in-time boundary keeps future data out of the prompt; and
 - costs and a small complexity penalty discourage fragile, high-turnover rules.
 
-The training reward remains continuous, while a separate `passed` metric
-requires both `DSR > 0.90` and `PBO < 0.25`.
+The training reward keeps continuous DSR, PBO, validity, and complexity shaping,
+then adds a small conjunctive gate bonus when both `DSR > 0.90` and
+`PBO < 0.25`. The same condition is logged as the `passed` metric.
 
 ## Current status
 

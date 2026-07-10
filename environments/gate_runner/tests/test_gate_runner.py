@@ -142,6 +142,30 @@ def test_signature_overfit_config_scores_below_parsimonious_config() -> None:
     assert honest_score.reward > overfit_score.reward + 0.10
 
 
+def test_gate_bonus_makes_every_pass_outrank_the_best_nonpass() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    least_complex = 5.0 / 8.0
+    most_complex = 6.0 / 8.0
+
+    worst_pass = scorer._shaped_reward(
+        dsr=np.nextafter(scorer.DSR_PASS_THRESHOLD, 1.0),
+        pbo=np.nextafter(scorer.PBO_PASS_THRESHOLD, 0.0),
+        complexity=most_complex,
+    )
+    best_dsr_failure = scorer._shaped_reward(
+        dsr=scorer.DSR_PASS_THRESHOLD,
+        pbo=0.0,
+        complexity=least_complex,
+    )
+    best_pbo_failure = scorer._shaped_reward(
+        dsr=1.0,
+        pbo=scorer.PBO_PASS_THRESHOLD,
+        complexity=least_complex,
+    )
+
+    assert worst_pass > max(best_dsr_failure, best_pbo_failure)
+
+
 def test_invalid_completion_fails_closed_to_exactly_zero() -> None:
     environment = load_environment(train_examples=1, eval_examples=1)
     honest_rubric = environment.rubric.rubrics[0]
