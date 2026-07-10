@@ -5,7 +5,7 @@ reflection_model = "openai/gpt-oss-20b"
 # reflection_model = "openai/gpt-oss-120b"
 
 [[env]]
-env_id = "gate-runner"
+env_id = "br-322/gate-runner"
 
 [gepa]
 max_calls = 500

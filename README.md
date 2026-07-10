@@ -45,6 +45,15 @@ investment performance.
 Prerequisites: Python 3.12+, `uv`, and the Prime CLI authenticated with
 `prime login`.
 
+Install and evaluate the public Hub environment:
+
+```bash
+prime env install br-322/gate-runner --plain
+prime eval run br-322/gate-runner
+```
+
+For development from this checkout, install the local environment instead:
+
 ```bash
 prime env install gate-runner --plain
 prime eval run gate-runner

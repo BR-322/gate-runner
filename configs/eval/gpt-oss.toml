@@ -7,6 +7,6 @@ rollouts_per_example = 3
 max_tokens = 1024
 
 [[eval]]
-env_id = "gate-runner"
+env_id = "br-322/gate-runner"
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

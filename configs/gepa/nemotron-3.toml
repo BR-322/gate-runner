@@ -5,7 +5,7 @@ reflection_model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
 # reflection_model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"  # pragma: allowlist secret
 
 [[env]]
-env_id = "gate-runner"
+env_id = "br-322/gate-runner"
 
 [gepa]
 max_calls = 500

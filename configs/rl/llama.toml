@@ -11,7 +11,7 @@ max_tokens = 1024
 
 # Gate Runner training environment.
 [[env]]
-id = "gate-runner"
+id = "br-322/gate-runner"
 
 # Online evaluations during training. Uncomment to add [[eval.env]] blocks.
 
@@ -22,6 +22,6 @@ id = "gate-runner"
 # eval_base_model = true
 
 # [[eval.env]]
-# id = "gate-runner"
+# id = "br-322/gate-runner"
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

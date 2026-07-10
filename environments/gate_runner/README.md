@@ -53,7 +53,14 @@ as the evaluation headline, not generic `pass@k`.
 
 ## Quickstart
 
-From the Prime Lab workspace root:
+Install and evaluate the public Hub environment:
+
+```bash
+prime env install br-322/gate-runner --plain
+prime eval run br-322/gate-runner
+```
+
+For development from a Prime Lab workspace containing this source:
 
 ```bash
 prime env install gate-runner --plain

@@ -9,7 +9,7 @@ reflection_model = "Qwen/Qwen3.5-4B"
 # reflection_model = "Qwen/Qwen3.5-9B"
 
 [[env]]
-env_id = "gate-runner"
+env_id = "br-322/gate-runner"
 
 [gepa]
 max_calls = 500
