@@ -103,3 +103,7 @@ action schema, reward definition, metrics, data contract, and limitations.
 
 Gate Runner is an evaluation and research environment. It does not provide
 investment advice.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

@@ -126,3 +126,8 @@ investment advice.
 
 - Bailey and López de Prado, [The Deflated Sharpe Ratio](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf)
 - Bailey, Borwein, López de Prado, and Zhu, [The Probability of Backtest Overfitting](https://escholarship.org/uc/item/4w1110bb)
+
+## License
+
+Gate Runner is licensed under the
+[Apache License 2.0](https://github.com/BR-322/gate-runner/blob/main/LICENSE).

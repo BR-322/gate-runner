@@ -3,7 +3,12 @@ name = "gate-runner"
 version = "0.1.0"
 description = "Prime Lab workspace for the Gate Runner honest finance-RL environment"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "verifiers>=0.1.14",
 ]
+
+[project.urls]
+Repository = "https://github.com/BR-322/gate-runner"
+Documentation = "https://github.com/BR-322/gate-runner#readme"
