@@ -4,8 +4,9 @@ Gate Runner is a single-turn strategy-design environment whose grader penalizes
 the usual backtest search game. A model receives a point-in-time market brief
 and must return one strict JSON strategy config. The environment then evaluates
 that config on hidden sequential windows with trading costs, deflates Sharpe by
-the number of sampled configs in the rollout group, and applies a CSCV/PBO
-penalty.
+the number of sampled configs in the rollout group, and rewards lower-tail
+cross-window performance. CSCV/PBO is reported as a selection-process
+diagnostic and does not affect training reward or pass status.
 
 ## Environment contract
 
@@ -31,16 +32,20 @@ out-of-range parameters receive exactly zero reward.
 
 Malformed output receives `0`. Every schema-valid config receives a dense score
 inside one of two non-overlapping tiers. Define normalized violations for the
-DSR, PBO, active-session, and active-window gates; then:
+DSR, window-tail, expected-shortfall, active-session, and active-window gates;
+then:
 
 ```text
 fail_proximity = 1 - max(normalized gate violations)
 fail_reward = 0.10 + 0.35*fail_proximity
 
-pass_robustness = min(normalized DSR margin, normalized PBO margin)
+pass_robustness = min(
+    normalized DSR margin,
+    normalized window-tail margin,
+    normalized expected-shortfall margin,
+)
 pass_reward = 0.60 + 0.30*pass_robustness
 
-reward += 0.03*(mean PBO contribution - strategy PBO contribution)
 reward -= 0.01*complexity_excess
 ```
 
@@ -48,26 +53,43 @@ reward -= 0.01*complexity_excess
   benchmark uses every sampled rollout in the same episode group as a trial,
   including invalid attempts, and the valid trials' Sharpe dispersion. A null
   standard error is used when fewer than two valid Sharpe estimates exist.
-- **PBO** uses combinatorially symmetric cross-validation across the sequential
-  windows and valid configs in the episode group. Split losses are attributed
-  to the in-sample winner, divided evenly across ties, and sum back to group
-  PBO. Centering those contributions supplies per-strategy credit without
-  changing the headline group statistic. PBO is `0` when fewer than two valid
-  configs exist because cross-strategy selection risk is then undefined.
+- **window_tail_score** computes each window's cost-adjusted log growth and
+  divides it by an exogenous reference risk: the median underlying-asset daily
+  volatility over the hidden horizon, scaled to the window length. It averages
+  the weakest `max(2, ceil(25% * windows))` outcomes. Using market risk rather
+  than the strategy's realized volatility prevents inactivity from shrinking
+  the denominator. The provisional pass boundary is `>-0.50` reference-risk
+  units and the full robustness target is `0.25`.
+- **PBO** remains a diagnostic CSCV estimate across valid configs in the
+  episode group. An IS winner counts as a loss only when it ranks strictly
+  below the OOS median; median ranks and exact ties are neutral. Split losses
+  remain attributed for analysis, but neither group PBO nor its attribution
+  changes reward or pass status. PBO is `0` when fewer than two valid configs
+  exist.
+- **daily_expected_shortfall** is the positive mean loss over the weakest 5%
+  of cost-adjusted daily returns. **expected_shortfall_ratio** divides that
+  value by exogenous reference daily risk, defined as `reference_window_risk`
+  divided by `sqrt(window_days)`. Ratios below `5.0` pass; `3.0` or lower
+  receives the full robustness margin. This catches concentrated daily losses
+  that profitable 42-session windows can otherwise conceal.
 - **complexity_excess** is `0` for five active numeric parameters and `1` for
   six; its bounded penalty cannot overturn reward-tier ordering.
-- **passed** requires `DSR > 0.90`, `PBO < 0.25`, active positions on at least
-  10% of grading sessions, and activity in at least four of eight grading
-  windows. Activity is rewarded only until eligibility is reached, preventing
-  an incentive for gratuitous exposure or turnover.
+- **passed** requires `DSR > 0.90`, `window_tail_score > -0.50`,
+  `expected_shortfall_ratio < 5.0`, active positions on at least 10% of grading
+  sessions, and activity in at least four of eight grading windows. Activity is
+  rewarded only until eligibility is reached, preventing an incentive for
+  gratuitous exposure or turnover.
 
 The rubric also logs `validity`, `raw_sharpe`, `dsr`, `pbo`,
-`pbo_contribution`, `complexity`, `parameter_count`, `trial_count`, `passed`,
-`turnover`, `active_fraction`, and `active_windows`.
+`pbo_contribution`, `window_tail_score`, `reference_window_risk`,
+`daily_expected_shortfall`, `expected_shortfall_ratio`, `complexity`,
+`parameter_count`, `trial_count`, `passed`, `turnover`, `active_fraction`, and
+`active_windows`.
 
 Verifiers' generic `pass@k` display applies its own threshold to the shaped
 reward. Use the logged `passed` metric as the evaluation headline because it
-records Gate Runner's explicit DSR/PBO conjunction directly.
+records Gate Runner's explicit DSR/window-tail/expected-shortfall conjunction
+directly.
 
 ## Quickstart
 
@@ -98,8 +120,8 @@ prime eval run gate-runner
 ```
 
 The environment defaults in `pyproject.toml` run five examples with three
-rollouts each. Group scoring is required for trial-count deflation and PBO, so
-do not use independent scoring for representative results.
+rollouts each. Group scoring is required for trial-count deflation and
+diagnostic PBO, so do not use independent scoring for representative results.
 
 Run the deterministic test suite with:
 
@@ -173,6 +195,7 @@ investment advice.
 
 - Bailey and López de Prado, [The Deflated Sharpe Ratio](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf)
 - Bailey, Borwein, López de Prado, and Zhu, [The Probability of Backtest Overfitting](https://escholarship.org/uc/item/4w1110bb)
+- Rockafellar and Uryasev, [Optimization of Conditional Value-at-Risk](https://doi.org/10.21314/JOR.2000.038)
 
 ## License
 

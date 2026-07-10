@@ -20,6 +20,10 @@ from gate_runner_core.market import MarketData
 class BacktestResult:
     daily_returns: np.ndarray
     window_sharpes: np.ndarray
+    window_tail_score: float
+    reference_window_risk: float
+    daily_expected_shortfall: float
+    expected_shortfall_ratio: float
     raw_sharpe: float
     turnover: float
     active_fraction: float
@@ -34,6 +38,10 @@ class HonestScore:
     dsr: float = 0.0
     pbo: float = 0.0
     pbo_contribution: float = 0.0
+    window_tail_score: float = 0.0
+    reference_window_risk: float = 0.0
+    daily_expected_shortfall: float = 0.0
+    expected_shortfall_ratio: float = 0.0
     complexity: float = 0.0
     parameter_count: float = 0.0
     trial_count: float = 0.0
@@ -47,6 +55,9 @@ class HonestScore:
 
 
 class StrategyBacktester:
+    WINDOW_TAIL_FRACTION = 0.25
+    DAILY_EXPECTED_SHORTFALL_FRACTION = 0.05
+
     def __init__(
         self,
         market: MarketData,
@@ -68,6 +79,61 @@ class StrategyBacktester:
             return 0.0
         return float(np.mean(returns) / standard_deviation * np.sqrt(252.0))
 
+    @staticmethod
+    def lower_tail_window_score(
+        window_returns: np.ndarray,
+        reference_window_risk: float,
+        tail_fraction: float = WINDOW_TAIL_FRACTION,
+    ) -> float:
+        """Average the weakest cost-adjusted window returns in reference-risk units."""
+        values = np.asarray(window_returns, dtype=float)
+        if values.ndim != 2 or values.shape[0] < 1:
+            raise ValueError("window_returns must be windows x sessions")
+        if not np.all(np.isfinite(values)) or np.any(values <= -1.0):
+            return -np.inf
+        if not np.isfinite(reference_window_risk) or reference_window_risk <= 0.0:
+            raise ValueError("reference_window_risk must be finite and positive")
+        if not 0.0 < tail_fraction <= 1.0:
+            raise ValueError("tail_fraction must be in (0, 1]")
+
+        window_growth = np.sum(np.log1p(values), axis=1)
+        scaled_growth = window_growth / reference_window_risk
+        tail_count = min(
+            len(scaled_growth),
+            max(2, int(np.ceil(tail_fraction * len(scaled_growth)))),
+        )
+        return float(np.mean(np.partition(scaled_growth, tail_count - 1)[:tail_count]))
+
+    @staticmethod
+    def expected_shortfall(
+        returns: np.ndarray,
+        tail_fraction: float = DAILY_EXPECTED_SHORTFALL_FRACTION,
+    ) -> float:
+        """Return the positive mean loss over the weakest daily-return tail."""
+        values = np.asarray(returns, dtype=float)
+        if values.ndim != 1 or not len(values) or not np.all(np.isfinite(values)):
+            return 0.0
+        if not 0.0 < tail_fraction <= 1.0:
+            raise ValueError("tail_fraction must be in (0, 1]")
+        tail_count = max(1, int(np.ceil(tail_fraction * len(values))))
+        tail_mean = float(np.mean(np.partition(values, tail_count - 1)[:tail_count]))
+        return max(0.0, -tail_mean)
+
+    def _reference_window_risk(self, as_of_index: int) -> float:
+        """Use exogenous asset volatility so strategy inactivity cannot shrink risk."""
+        end = as_of_index + self.windows * self.window_days
+        asset_returns = self.market.returns[as_of_index:end]
+        asset_volatility = np.std(asset_returns, axis=0, ddof=1)
+        finite_positive = asset_volatility[
+            np.isfinite(asset_volatility) & (asset_volatility > 1e-12)
+        ]
+        if not len(finite_positive):
+            return 1e-6
+        return max(
+            1e-6,
+            float(np.median(finite_positive) * np.sqrt(self.window_days)),
+        )
+
     def evaluate(self, strategy: StrategyConfig, as_of_index: int) -> BacktestResult:
         all_returns: list[np.ndarray] = []
         window_sharpes: list[float] = []
@@ -86,9 +152,22 @@ class StrategyBacktester:
             total_active_days += active_days
             active_windows += int(active_days > 0)
         daily_returns = np.concatenate(all_returns)
+        window_returns = np.vstack(all_returns)
+        reference_window_risk = self._reference_window_risk(as_of_index)
+        daily_expected_shortfall = self.expected_shortfall(daily_returns)
+        reference_daily_risk = reference_window_risk / np.sqrt(self.window_days)
         return BacktestResult(
             daily_returns=daily_returns,
             window_sharpes=np.asarray(window_sharpes, dtype=float),
+            window_tail_score=self.lower_tail_window_score(
+                window_returns,
+                reference_window_risk,
+            ),
+            reference_window_risk=reference_window_risk,
+            daily_expected_shortfall=daily_expected_shortfall,
+            expected_shortfall_ratio=(
+                daily_expected_shortfall / reference_daily_risk
+            ),
             raw_sharpe=self.annualized_sharpe(daily_returns),
             turnover=total_turnover,
             active_fraction=total_active_days / (self.windows * self.window_days),
@@ -329,7 +408,7 @@ class ProbabilityBacktestOverfitting:
                 )
                 average_rank = 1.0 + lower + max(0.0, equal) / 2.0
                 relative_rank = average_rank / (strategy_count + 1.0)
-                split_losses.append(float(relative_rank <= 0.5))
+                split_losses.append(float(relative_rank < 0.5))
             split_loss = float(np.mean(split_losses))
             losses.append(split_loss)
             contributions[winners] += np.asarray(split_losses) / len(winners)
@@ -340,7 +419,12 @@ class ProbabilityBacktestOverfitting:
 
 class HonestScorer:
     DSR_PASS_THRESHOLD = 0.90
-    PBO_PASS_THRESHOLD = 0.25
+    WINDOW_TAIL_PASS_THRESHOLD = -0.50
+    WINDOW_TAIL_ROBUST_TARGET = 0.25
+    WINDOW_TAIL_FAILURE_FLOOR = -2.50
+    EXPECTED_SHORTFALL_PASS_THRESHOLD = 5.0
+    EXPECTED_SHORTFALL_ROBUST_TARGET = 3.0
+    EXPECTED_SHORTFALL_FAILURE_CEILING = 12.0
     MIN_ACTIVE_FRACTION = 0.10
     MIN_ACTIVE_WINDOWS = 4
 
@@ -348,7 +432,6 @@ class HonestScorer:
     FAIL_PROXIMITY_SPAN = 0.35
     PASS_FLOOR = 0.60
     PASS_ROBUSTNESS_SPAN = 0.30
-    PBO_ATTRIBUTION_WEIGHT = 0.03
     COMPLEXITY_WEIGHT = 0.01
     MIN_COMPLEXITY = 5.0 / 8.0
     MAX_COMPLEXITY = 6.0 / 8.0
@@ -361,13 +444,15 @@ class HonestScorer:
     def _passes_gate(
         cls,
         dsr: float,
-        pbo: float,
+        window_tail_score: float,
+        expected_shortfall_ratio: float,
         active_fraction: float,
         active_windows: float,
     ) -> bool:
         return (
             dsr > cls.DSR_PASS_THRESHOLD
-            and pbo < cls.PBO_PASS_THRESHOLD
+            and window_tail_score > cls.WINDOW_TAIL_PASS_THRESHOLD
+            and expected_shortfall_ratio < cls.EXPECTED_SHORTFALL_PASS_THRESHOLD
             and active_fraction >= cls.MIN_ACTIVE_FRACTION
             and active_windows >= cls.MIN_ACTIVE_WINDOWS
         )
@@ -375,15 +460,18 @@ class HonestScorer:
     def _shaped_reward(
         self,
         dsr: float,
-        pbo: float,
+        window_tail_score: float,
+        expected_shortfall_ratio: float,
         complexity: float,
-        pbo_contribution: float,
-        mean_pbo_contribution: float,
         active_fraction: float,
         active_windows: float,
     ) -> float:
         passed = self._passes_gate(
-            dsr, pbo, active_fraction, active_windows
+            dsr,
+            window_tail_score,
+            expected_shortfall_ratio,
+            active_fraction,
+            active_windows,
         )
 
         if passed:
@@ -393,12 +481,32 @@ class HonestScorer:
                 0.0,
                 1.0,
             )
-            pbo_margin = np.clip(
-                (self.PBO_PASS_THRESHOLD - pbo) / self.PBO_PASS_THRESHOLD,
+            window_tail_margin = np.clip(
+                (window_tail_score - self.WINDOW_TAIL_PASS_THRESHOLD)
+                / (
+                    self.WINDOW_TAIL_ROBUST_TARGET
+                    - self.WINDOW_TAIL_PASS_THRESHOLD
+                ),
                 0.0,
                 1.0,
             )
-            robustness = min(float(dsr_margin), float(pbo_margin))
+            expected_shortfall_margin = np.clip(
+                (
+                    self.EXPECTED_SHORTFALL_PASS_THRESHOLD
+                    - expected_shortfall_ratio
+                )
+                / (
+                    self.EXPECTED_SHORTFALL_PASS_THRESHOLD
+                    - self.EXPECTED_SHORTFALL_ROBUST_TARGET
+                ),
+                0.0,
+                1.0,
+            )
+            robustness = min(
+                float(dsr_margin),
+                float(window_tail_margin),
+                float(expected_shortfall_margin),
+            )
             reward = self.PASS_FLOOR + self.PASS_ROBUSTNESS_SPAN * robustness
         else:
             violations = (
@@ -408,8 +516,23 @@ class HonestScorer:
                     1.0,
                 ),
                 np.clip(
-                    (pbo - self.PBO_PASS_THRESHOLD)
-                    / (1.0 - self.PBO_PASS_THRESHOLD),
+                    (self.WINDOW_TAIL_PASS_THRESHOLD - window_tail_score)
+                    / (
+                        self.WINDOW_TAIL_PASS_THRESHOLD
+                        - self.WINDOW_TAIL_FAILURE_FLOOR
+                    ),
+                    0.0,
+                    1.0,
+                ),
+                np.clip(
+                    (
+                        expected_shortfall_ratio
+                        - self.EXPECTED_SHORTFALL_PASS_THRESHOLD
+                    )
+                    / (
+                        self.EXPECTED_SHORTFALL_FAILURE_CEILING
+                        - self.EXPECTED_SHORTFALL_PASS_THRESHOLD
+                    ),
                     0.0,
                     1.0,
                 ),
@@ -429,9 +552,6 @@ class HonestScorer:
             proximity = 1.0 - max(float(value) for value in violations)
             reward = self.VALID_FLOOR + self.FAIL_PROXIMITY_SPAN * proximity
 
-        reward += self.PBO_ATTRIBUTION_WEIGHT * (
-            mean_pbo_contribution - pbo_contribution
-        )
         complexity_excess = np.clip(
             (complexity - self.MIN_COMPLEXITY)
             / (self.MAX_COMPLEXITY - self.MIN_COMPLEXITY),
@@ -468,9 +588,6 @@ class HonestScorer:
         else:
             pbo = 0.0
             pbo_contributions = np.asarray([], dtype=float)
-        mean_pbo_contribution = (
-            float(np.mean(pbo_contributions)) if len(pbo_contributions) else 0.0
-        )
         trial_daily_sharpes = np.asarray(
             [result.raw_sharpe / np.sqrt(252.0) for result in valid_results],
             dtype=float,
@@ -496,16 +613,16 @@ class HonestScorer:
             complexity = strategy.normalized_complexity
             passed = self._passes_gate(
                 dsr,
-                pbo,
+                result.window_tail_score,
+                result.expected_shortfall_ratio,
                 result.active_fraction,
                 result.active_windows,
             )
             reward = self._shaped_reward(
                 dsr=dsr,
-                pbo=pbo,
+                window_tail_score=result.window_tail_score,
+                expected_shortfall_ratio=result.expected_shortfall_ratio,
                 complexity=complexity,
-                pbo_contribution=pbo_contribution,
-                mean_pbo_contribution=mean_pbo_contribution,
                 active_fraction=result.active_fraction,
                 active_windows=result.active_windows,
             )
@@ -517,6 +634,10 @@ class HonestScorer:
                     dsr=dsr,
                     pbo=pbo,
                     pbo_contribution=pbo_contribution,
+                    window_tail_score=result.window_tail_score,
+                    reference_window_risk=result.reference_window_risk,
+                    daily_expected_shortfall=result.daily_expected_shortfall,
+                    expected_shortfall_ratio=result.expected_shortfall_ratio,
                     complexity=complexity,
                     parameter_count=float(strategy.parameter_count),
                     trial_count=float(trial_count),

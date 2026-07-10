@@ -6,9 +6,11 @@ training and evaluating models on honest quantitative-strategy design.
 
 The model receives a point-in-time market brief and returns one strategy as
 strict JSON. Gate Runner evaluates that proposal on hidden sequential windows,
-charges trading costs, deflates Sharpe for repeated trials, and penalizes the
-probability of backtest overfitting. The reward is designed to make blind
-parameter search less attractive than simple strategies that generalize.
+charges trading costs, deflates Sharpe for repeated trials, and penalizes weak
+cross-window outcomes and concentrated daily downside. CSCV/PBO remains a
+diagnostic of the selection process rather than a training objective. The
+reward is designed to make blind parameter search less attractive than simple
+strategies that generalize.
 
 ## Why this environment exists
 
@@ -19,21 +21,23 @@ grade:
 
 - each rollout in an episode group counts as another trial;
 - Deflated Sharpe Ratio adjusts for selection and non-normal returns;
-- combinatorially symmetric cross-validation estimates PBO;
+- a lower-tail window score rewards cost-adjusted performance in weak regimes;
+- normalized expected shortfall limits concentrated daily losses;
+- combinatorially symmetric cross-validation reports PBO as a diagnostic;
 - a strict point-in-time boundary keeps future data out of the prompt; and
 - costs and a small complexity penalty discourage fragile, high-turnover rules.
 
 The training reward has three monotone zones: valid failures climb by closing
 their worst normalized gate violation; crossing every gate produces a hard
-reward jump; and passes keep climbing by improving their weaker DSR/PBO safety
-margin. Per-strategy CSCV loss attribution makes the group PBO objective
-learnable under group-relative training.
+reward jump; and passes keep climbing by improving their weaker DSR/window-tail
+or downside safety margin. These metrics belong to each strategy independently,
+avoiding the use of a group selection diagnostic as a policy objective.
 
 ## Current status
 
 - The environment, strategy schema, synthetic benchmark panel, bundled ECB FX
-  profile, walk-forward backtester, DSR/PBO scorer, and deterministic regression
-  suite are implemented.
+  profile, walk-forward backtester, DSR/lower-tail/downside reward, PBO
+  diagnostics, and deterministic regression suite are implemented.
 - The signature test ranks a noisy short-horizon breakout below a parsimonious
   momentum strategy.
 - Local Prime installation and a 20-example × 3-rollout ECB/Qwen 4B preflight
@@ -79,7 +83,7 @@ uv run --project environments/gate_runner --group dev pytest -q
 ```
 
 The default evaluation uses grouped rollouts because DSR trial accounting and
-PBO operate across candidate strategies from the same prompt.
+diagnostic PBO operate across candidate strategies from the same prompt.
 
 ## Repository layout
 
@@ -130,6 +134,8 @@ action schema, reward definition, metrics, data contract, and limitations.
   [The Deflated Sharpe Ratio](https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf)
 - David H. Bailey, Jonathan M. Borwein, Marcos López de Prado, and Qiji Jim Zhu,
   [The Probability of Backtest Overfitting](https://escholarship.org/uc/item/4w1110bb)
+- R. Tyrrell Rockafellar and Stanislav Uryasev,
+  [Optimization of Conditional Value-at-Risk](https://doi.org/10.21314/JOR.2000.038)
 
 Gate Runner is an evaluation and research environment. It does not provide
 investment advice.

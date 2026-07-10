@@ -1,6 +1,6 @@
 [project]
 name = "gate-runner"
-description = "Honesty-shaped strategy design with walk-forward DSR and CSCV/PBO grading"
+description = "Honesty-shaped strategy design with DSR and lower-tail window grading"
 tags = ["finance", "honest-evaluation", "train", "eval"]
 version = "0.2.1"
 license = "Apache-2.0"

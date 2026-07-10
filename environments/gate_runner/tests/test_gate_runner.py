@@ -127,15 +127,59 @@ def test_cscv_detects_a_split_selected_overfit_strategy() -> None:
         ]
     )
     pbo, contributions = ProbabilityBacktestOverfitting.decompose(window_scores)
-    assert pbo > 0.40
+    assert pbo == pytest.approx(17.0 / 70.0)
     assert np.sum(contributions) == pytest.approx(pbo)
 
 
 def test_cscv_splits_loss_credit_across_tied_winners() -> None:
     tied_scores = np.ones((2, 8), dtype=float)
     pbo, contributions = ProbabilityBacktestOverfitting.decompose(tied_scores)
+    assert pbo == 0.0
     assert contributions[0] == pytest.approx(contributions[1])
     assert np.sum(contributions) == pytest.approx(pbo)
+
+
+def test_lower_tail_window_score_averages_the_two_weakest_windows() -> None:
+    returns = np.asarray(
+        [
+            [0.01, 0.01],
+            [-0.01, -0.01],
+            [0.02, 0.02],
+            [-0.02, -0.02],
+            [0.00, 0.00],
+            [0.03, 0.03],
+            [0.01, 0.00],
+            [0.02, 0.00],
+        ]
+    )
+    expected = np.mean(
+        [
+            np.sum(np.log1p(returns[1])),
+            np.sum(np.log1p(returns[3])),
+        ]
+    )
+    score = StrategyBacktester.lower_tail_window_score(
+        returns,
+        reference_window_risk=1.0,
+    )
+    assert score == pytest.approx(expected)
+
+
+def test_tail_score_uses_exogenous_risk_and_does_not_reward_flat_returns() -> None:
+    flat = np.zeros((8, 42), dtype=float)
+    weak = flat.copy()
+    weak[:2] = -0.001
+    flat_score = StrategyBacktester.lower_tail_window_score(flat, 0.10)
+    weak_score = StrategyBacktester.lower_tail_window_score(weak, 0.10)
+    assert flat_score == 0.0
+    assert weak_score < flat_score
+
+
+def test_daily_expected_shortfall_reports_the_mean_tail_loss() -> None:
+    returns = np.asarray([-0.05, -0.03, -0.01, 0.01, 0.02])
+    assert StrategyBacktester.expected_shortfall(
+        returns, tail_fraction=0.40
+    ) == pytest.approx(0.04)
 
 
 def test_signature_overfit_config_scores_below_parsimonious_config() -> None:
@@ -158,98 +202,179 @@ def test_reward_tiers_make_every_pass_outrank_the_best_nonpass() -> None:
 
     worst_pass = scorer._shaped_reward(
         dsr=np.nextafter(scorer.DSR_PASS_THRESHOLD, 1.0),
-        pbo=np.nextafter(scorer.PBO_PASS_THRESHOLD, 0.0),
+        window_tail_score=np.nextafter(scorer.WINDOW_TAIL_PASS_THRESHOLD, 1.0),
+        expected_shortfall_ratio=np.nextafter(
+            scorer.EXPECTED_SHORTFALL_PASS_THRESHOLD, 0.0
+        ),
         complexity=most_complex,
-        pbo_contribution=1.0,
-        mean_pbo_contribution=0.0,
         active_fraction=scorer.MIN_ACTIVE_FRACTION,
         active_windows=scorer.MIN_ACTIVE_WINDOWS,
     )
     best_dsr_failure = scorer._shaped_reward(
         dsr=scorer.DSR_PASS_THRESHOLD,
-        pbo=0.0,
+        window_tail_score=scorer.WINDOW_TAIL_ROBUST_TARGET,
+        expected_shortfall_ratio=scorer.EXPECTED_SHORTFALL_ROBUST_TARGET,
         complexity=least_complex,
-        pbo_contribution=0.0,
-        mean_pbo_contribution=1.0,
         active_fraction=1.0,
         active_windows=8,
     )
-    best_pbo_failure = scorer._shaped_reward(
+    best_tail_failure = scorer._shaped_reward(
         dsr=1.0,
-        pbo=scorer.PBO_PASS_THRESHOLD,
+        window_tail_score=scorer.WINDOW_TAIL_PASS_THRESHOLD,
+        expected_shortfall_ratio=scorer.EXPECTED_SHORTFALL_ROBUST_TARGET,
         complexity=least_complex,
-        pbo_contribution=0.0,
-        mean_pbo_contribution=1.0,
+        active_fraction=1.0,
+        active_windows=8,
+    )
+    best_expected_shortfall_failure = scorer._shaped_reward(
+        dsr=1.0,
+        window_tail_score=scorer.WINDOW_TAIL_ROBUST_TARGET,
+        expected_shortfall_ratio=scorer.EXPECTED_SHORTFALL_PASS_THRESHOLD,
+        complexity=least_complex,
         active_fraction=1.0,
         active_windows=8,
     )
 
-    assert worst_pass > max(best_dsr_failure, best_pbo_failure)
+    assert worst_pass > max(
+        best_dsr_failure,
+        best_tail_failure,
+        best_expected_shortfall_failure,
+    )
 
 
 def test_fail_tier_rewards_only_the_binding_gate_gap() -> None:
     scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
     common = {
         "complexity": scorer.MIN_COMPLEXITY,
-        "pbo_contribution": 0.0,
-        "mean_pbo_contribution": 0.0,
+        "expected_shortfall_ratio": scorer.EXPECTED_SHORTFALL_ROBUST_TARGET,
         "active_fraction": 1.0,
         "active_windows": 8,
     }
 
-    pbo_binding = scorer._shaped_reward(dsr=0.91, pbo=0.80, **common)
-    pbo_binding_with_perfect_dsr = scorer._shaped_reward(
-        dsr=1.0, pbo=0.80, **common
+    tail_binding = scorer._shaped_reward(
+        dsr=0.91, window_tail_score=-2.0, **common
     )
-    closer_pbo = scorer._shaped_reward(dsr=1.0, pbo=0.40, **common)
-    dsr_binding = scorer._shaped_reward(dsr=0.50, pbo=0.20, **common)
-    dsr_binding_with_perfect_pbo = scorer._shaped_reward(
-        dsr=0.50, pbo=0.0, **common
+    tail_binding_with_perfect_dsr = scorer._shaped_reward(
+        dsr=1.0, window_tail_score=-2.0, **common
+    )
+    closer_tail = scorer._shaped_reward(
+        dsr=1.0, window_tail_score=-1.0, **common
+    )
+    dsr_binding = scorer._shaped_reward(
+        dsr=0.50, window_tail_score=0.0, **common
+    )
+    dsr_binding_with_perfect_tail = scorer._shaped_reward(
+        dsr=0.50, window_tail_score=1.0, **common
     )
 
-    assert pbo_binding == pytest.approx(pbo_binding_with_perfect_dsr)
-    assert closer_pbo > pbo_binding
-    assert dsr_binding == pytest.approx(dsr_binding_with_perfect_pbo)
+    assert tail_binding == pytest.approx(tail_binding_with_perfect_dsr)
+    assert closer_tail > tail_binding
+    assert dsr_binding == pytest.approx(dsr_binding_with_perfect_tail)
+
+    expected_shortfall_binding = scorer._shaped_reward(
+        dsr=1.0,
+        window_tail_score=scorer.WINDOW_TAIL_ROBUST_TARGET,
+        expected_shortfall_ratio=10.0,
+        complexity=scorer.MIN_COMPLEXITY,
+        active_fraction=1.0,
+        active_windows=8,
+    )
+    expected_shortfall_binding_with_extra_tail = scorer._shaped_reward(
+        dsr=1.0,
+        window_tail_score=1.0,
+        expected_shortfall_ratio=10.0,
+        complexity=scorer.MIN_COMPLEXITY,
+        active_fraction=1.0,
+        active_windows=8,
+    )
+    closer_expected_shortfall = scorer._shaped_reward(
+        dsr=1.0,
+        window_tail_score=1.0,
+        expected_shortfall_ratio=7.0,
+        complexity=scorer.MIN_COMPLEXITY,
+        active_fraction=1.0,
+        active_windows=8,
+    )
+    assert expected_shortfall_binding == pytest.approx(
+        expected_shortfall_binding_with_extra_tail
+    )
+    assert closer_expected_shortfall > expected_shortfall_binding
 
 
 def test_pass_tier_rewards_the_weaker_robustness_margin() -> None:
     scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
     common = {
         "complexity": scorer.MIN_COMPLEXITY,
-        "pbo_contribution": 0.0,
-        "mean_pbo_contribution": 0.0,
+        "expected_shortfall_ratio": scorer.EXPECTED_SHORTFALL_ROBUST_TARGET,
         "active_fraction": 1.0,
         "active_windows": 8,
     }
 
-    gate_tap = scorer._shaped_reward(dsr=0.91, pbo=0.24, **common)
-    perfect_dsr_same_pbo = scorer._shaped_reward(dsr=1.0, pbo=0.24, **common)
-    robust_pass = scorer._shaped_reward(dsr=0.98, pbo=0.02, **common)
+    gate_tap = scorer._shaped_reward(
+        dsr=0.91,
+        window_tail_score=np.nextafter(scorer.WINDOW_TAIL_PASS_THRESHOLD, 1.0),
+        **common,
+    )
+    perfect_dsr_same_tail = scorer._shaped_reward(
+        dsr=1.0,
+        window_tail_score=np.nextafter(scorer.WINDOW_TAIL_PASS_THRESHOLD, 1.0),
+        **common,
+    )
+    robust_pass = scorer._shaped_reward(
+        dsr=0.98,
+        window_tail_score=scorer.WINDOW_TAIL_ROBUST_TARGET,
+        **common,
+    )
 
-    assert gate_tap == pytest.approx(perfect_dsr_same_pbo)
+    assert gate_tap == pytest.approx(perfect_dsr_same_tail)
     assert robust_pass > gate_tap
+
+    expected_shortfall_gate_tap = scorer._shaped_reward(
+        dsr=0.98,
+        window_tail_score=scorer.WINDOW_TAIL_ROBUST_TARGET,
+        expected_shortfall_ratio=np.nextafter(
+            scorer.EXPECTED_SHORTFALL_PASS_THRESHOLD, 0.0
+        ),
+        complexity=scorer.MIN_COMPLEXITY,
+        active_fraction=1.0,
+        active_windows=8,
+    )
+    assert robust_pass > expected_shortfall_gate_tap
 
 
 def test_activity_gate_blocks_near_no_trade_strategies() -> None:
     scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
-    assert not scorer._passes_gate(1.0, 0.0, 0.099, 8)
-    assert not scorer._passes_gate(1.0, 0.0, 1.0, 3)
-    assert scorer._passes_gate(1.0, 0.0, 0.10, 4)
+    robust_es = scorer.EXPECTED_SHORTFALL_ROBUST_TARGET
+    assert not scorer._passes_gate(1.0, 0.0, robust_es, 0.099, 8)
+    assert not scorer._passes_gate(1.0, 0.0, robust_es, 1.0, 3)
+    assert scorer._passes_gate(1.0, 0.0, robust_es, 0.10, 4)
 
 
-def test_pbo_attribution_penalizes_the_strategy_causing_selection_losses() -> None:
+def test_expected_shortfall_gate_blocks_concentrated_downside() -> None:
     scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
-    common = {
-        "dsr": 0.70,
-        "pbo": 0.60,
-        "complexity": scorer.MIN_COMPLEXITY,
-        "mean_pbo_contribution": 0.20,
-        "active_fraction": 1.0,
-        "active_windows": 8,
-    }
-    helpful = scorer._shaped_reward(pbo_contribution=0.0, **common)
-    harmful = scorer._shaped_reward(pbo_contribution=0.40, **common)
-    assert helpful > harmful
+    assert not scorer._passes_gate(
+        1.0,
+        scorer.WINDOW_TAIL_ROBUST_TARGET,
+        scorer.EXPECTED_SHORTFALL_PASS_THRESHOLD,
+        1.0,
+        8,
+    )
+    assert scorer._passes_gate(
+        1.0,
+        scorer.WINDOW_TAIL_ROBUST_TARGET,
+        np.nextafter(scorer.EXPECTED_SHORTFALL_PASS_THRESHOLD, 0.0),
+        1.0,
+        8,
+    )
+
+
+def test_pbo_is_diagnostic_and_does_not_affect_per_strategy_reward() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    honest = StrategyParser.parse(json.dumps(HONEST_CONFIG))
+    first, second = scorer.score_group([honest, honest], as_of_index=1_500)
+    assert first.pbo == pytest.approx(second.pbo)
+    assert first.pbo_contribution == pytest.approx(second.pbo_contribution)
+    assert first.reward == pytest.approx(second.reward)
 
 
 def test_invalid_completion_fails_closed_to_exactly_zero() -> None:
