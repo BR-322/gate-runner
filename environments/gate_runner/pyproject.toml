@@ -1,8 +1,8 @@
 [project]
 name = "gate-runner"
-description = "Honesty-shaped strategy design with DSR and lower-tail window grading"
-tags = ["finance", "honest-evaluation", "train", "eval"]
-version = "0.3.0"
+description = "Platform-neutral strategy evaluation with grouped honesty scoring"
+tags = ["finance", "honest-evaluation", "platform-neutral", "train", "eval"]
+version = "0.4.0"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,6 +16,9 @@ dependencies = [
 Repository = "https://github.com/BR-322/gate-runner"
 Documentation = "https://github.com/BR-322/gate-runner/tree/main/environments/gate_runner#readme"
 
+[project.scripts]
+gate-runner = "gate_runner_cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -23,6 +26,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
     "gate_runner.py",
+    "gate_runner_cli.py",
+    "gate_runner_adapters/**/*.py",
     "gate_runner_core/**/*.py",
     "gate_runner_core/data/*.csv.gz",
     "gate_runner_core/data/*.json",

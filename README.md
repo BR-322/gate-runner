@@ -1,8 +1,11 @@
 # Gate Runner
 
-Gate Runner is a public [Prime Intellect](https://www.primeintellect.ai/)
-[Verifiers](https://github.com/PrimeIntellect-ai/verifiers) environment for
-training and evaluating models on honest quantitative-strategy design.
+Gate Runner is a platform-neutral benchmark for training and evaluating models
+on honest quantitative-strategy design. Its deterministic core can be used as
+a Python API or JSONL command-line evaluator. A maintained
+[Prime Intellect](https://www.primeintellect.ai/)
+[Verifiers](https://github.com/PrimeIntellect-ai/verifiers) adapter supports
+hosted evaluation and RL without defining the benchmark itself.
 
 A model receives a point-in-time market brief and returns one strict JSON
 strategy. Gate Runner evaluates it across hidden sequential windows, charges
@@ -31,6 +34,29 @@ improves only by closing its worst normalized violation; crossing every gate
 creates a hard reward jump; a passing strategy continues improving toward a
 robust margin.
 
+## Platform architecture
+
+Gate Runner separates benchmark semantics from execution platforms:
+
+```text
+market data ──> neutral tasks ──> grouped evaluator ──> reward + metrics
+                    │                    │
+                    ├── JSONL CLI        └── Prime/Verifiers adapter
+                    └── Python API           (same evaluator instance)
+```
+
+The platform-neutral `gate_runner_core` package owns data loading, PIT joins,
+task generation, strategy parsing, backtesting, DSR/PBO, reward shaping, and
+result records. It imports neither Verifiers nor Hugging Face Datasets. Platform
+code may translate task and result records, but it must not reimplement the
+grader.
+
+Grouped scoring is part of the public contract: every completion sampled for
+one cutoff must be submitted together so DSR sees the correct trial count and
+PBO sees the same candidate group. An adapter that scores completions
+independently is not Gate Runner-compatible. See
+[the adapter contract](docs/ADAPTERS.md) for the invariants.
+
 ## Data profiles
 
 | Profile | Purpose | Coverage | Carry |
@@ -57,9 +83,48 @@ for this public release. Gate Runner does not fabricate a replacement.
 
 ## Quickstart
 
-Prerequisites are Python 3.12+, `uv`, and an authenticated Prime CLI.
+Prerequisites for local use are Python 3.12+ and `uv`.
 
-Install the public Hub environment:
+### Platform-neutral Python API
+
+```python
+from gate_runner_core import GateRunnerBenchmark
+
+benchmark = GateRunnerBenchmark(dataset="ecb_fx_carry")
+_, eval_tasks = benchmark.build_tasks(train_examples=1, eval_examples=24)
+
+results = benchmark.evaluate_group(
+    completions=[candidate_json_1, candidate_json_2, candidate_json_3],
+    as_of_index=eval_tasks[0].as_of_index,
+)
+```
+
+Each result contains its reward, complete metric record, and any parse error.
+
+### Provider-neutral JSONL
+
+Generate tasks:
+
+```bash
+uv run --project environments/gate_runner gate-runner tasks \
+  --dataset ecb_fx_carry --split eval --examples 24 \
+  --output tasks.jsonl
+```
+
+Add a non-empty `completions` string array to each task record, then score all
+groups:
+
+```bash
+uv run --project environments/gate_runner gate-runner score \
+  --dataset ecb_fx_carry --input completions.jsonl \
+  --output results.jsonl
+```
+
+The model provider and inference stack never enter the scoring process.
+
+### Prime Intellect adapter
+
+With the Prime CLI authenticated, install the public Hub environment:
 
 ```bash
 prime env install br-322/gate-runner --plain
@@ -83,7 +148,7 @@ Inspect the reward distribution, hard-pass metric, errors, and samples before
 raising `-n` to `200`. Grouped rollouts are required for representative DSR
 trial accounting and PBO diagnostics.
 
-For local development:
+For local Prime adapter development:
 
 ```bash
 prime env install gate-runner --plain
@@ -121,8 +186,8 @@ A hard pass requires all of the following:
 - activity in at least four of eight grading windows.
 
 PBO is logged as a group diagnostic and does not affect reward or pass status.
-The evaluation headline is the logged `passed` metric, not Verifiers' generic
-`pass@k` threshold over the shaped reward.
+In the Prime adapter, the evaluation headline is the logged `passed` metric,
+not Verifiers' generic `pass@k` threshold over the shaped reward.
 
 See the [environment contract](environments/gate_runner/README.md) for the full
 reward definition, logged metrics, action bounds, and data-path interface.
@@ -162,7 +227,7 @@ The `ecb_fx` profile is intentionally retained. It provides:
 Existing v0.2 strategy JSON remains schema-compatible because a missing
 `universe_filter.rank_by` defaults to `relative_strength_252d`. This is not a
 promise of bit-for-bit v0.2 environment behavior: the current prompt, metric
-set, documentation, and package version are v0.3. For an exact historical
+set, documentation, and package version are v0.4. For an exact historical
 checkout, use commit [`99ac503`](https://github.com/BR-322/gate-runner/tree/99ac503).
 
 New training and evaluation configs use `ecb_fx_carry`; `ecb_fx` should be used
@@ -172,16 +237,22 @@ as an ablation or historical comparison, not as the default baseline.
 
 ```text
 configs/                         # Prime evaluation and RL model-family configs
+docs/                            # Platform adapter contract
 scripts/                         # Reproducible public-data and validation tools
 environments/gate_runner/
-├── gate_runner.py               # Verifiers entrypoint
+├── gate_runner.py               # Stable Prime Hub entrypoint
+├── gate_runner_cli.py           # Provider-neutral JSONL CLI
+├── gate_runner_adapters/
+│   └── prime.py                 # Verifiers/Hugging Face translation layer
 ├── gate_runner_core/
+│   ├── benchmark.py             # Neutral public benchmark API
 │   ├── config.py                # Strict strategy schema and parser
-│   ├── market.py                # Panels, PIT joins, features, and task builder
+│   ├── evaluator.py             # Neutral grouped completion evaluation
+│   ├── market.py                # Panels, PIT joins, and market features
 │   ├── scoring.py               # Backtester, DSR, CSCV/PBO, shaped reward
-│   ├── rubric.py                # Group reward and logged metrics
+│   ├── tasks.py                 # Neutral task records and embargoed splits
 │   └── data/                    # Pinned public snapshots and source manifest
-├── tests/test_gate_runner.py    # Deterministic, PIT, carry, and signature tests
+├── tests/test_gate_runner.py    # Core, parity, CLI, PIT, carry, signature tests
 ├── DATA_PROVENANCE.md           # Source, rights, checksums, and limitations
 └── README.md                    # Full environment contract
 ```
@@ -192,12 +263,14 @@ the example configs.
 
 ## Current status
 
-- v0.3 code, bundled data, PIT joins, carry accounting, carry ranking, and
-  forward validation are implemented.
-- The deterministic suite passes and the public artifacts rebuild
-  byte-for-byte.
+- v0.4 separates the benchmark core from its Prime adapter and adds neutral
+  Python and JSONL interfaces.
+- Adapter parity tests require Prime and neutral evaluation to produce exactly
+  the same rewards, metrics, and errors.
+- Bundled data, PIT joins, carry accounting, carry ranking, forward validation,
+  and byte-for-byte artifact rebuilds remain intact.
 - The earlier v0.2 Qwen 4B preflight used the spot-only profile and should not
-  be combined with v0.3 carry-aware results.
+  be combined with v0.4 carry-aware results.
 - The next milestone is a fresh multi-model preflight and baseline report on
   `ecb_fx_carry`.
 

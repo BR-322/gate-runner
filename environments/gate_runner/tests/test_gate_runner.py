@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import hashlib
 import json
 from pathlib import Path
@@ -7,14 +8,17 @@ import numpy as np
 import pytest
 
 from gate_runner import load_environment
+from gate_runner_cli import main as cli_main
+from gate_runner_core.benchmark import GateRunnerBenchmark
 from gate_runner_core.config import StrategyParser
-from gate_runner_core.market import ECB_FX_CURRENCIES, MarketData, TaskDatasetFactory
+from gate_runner_core.market import ECB_FX_CURRENCIES, MarketData
 from gate_runner_core.scoring import (
     DeflatedSharpeRatio,
     HonestScorer,
     ProbabilityBacktestOverfitting,
     StrategyBacktester,
 )
+from gate_runner_core.tasks import TaskFactory
 
 
 HONEST_CONFIG = {
@@ -104,7 +108,7 @@ def test_bundled_ecb_fx_snapshot_is_complete_and_supports_p3_scale() -> None:
     assert np.all(market.close > 0)
     assert np.all(market.spread_bps == 5.0)
 
-    train_dataset, eval_dataset = TaskDatasetFactory(
+    train_dataset, eval_dataset = TaskFactory(
         market=market,
         windows=8,
         window_days=42,
@@ -556,3 +560,107 @@ def test_environment_loads_the_carry_aware_ecb_profile() -> None:
     prompt = environment.eval_dataset[0]["question"]
     assert "public short-rate carry proxy" in prompt
     assert "CIP_3m_forward_points_pct" in prompt
+
+
+def test_neutral_tasks_match_the_prime_adapter_datasets() -> None:
+    benchmark = GateRunnerBenchmark(seed=23)
+    train_tasks, eval_tasks = benchmark.build_tasks(
+        train_examples=4,
+        eval_examples=3,
+    )
+    environment = load_environment(
+        seed=23,
+        train_examples=4,
+        eval_examples=3,
+    )
+    for task, row in zip(train_tasks, environment.dataset):
+        assert row["question"] == task.question
+        assert json.loads(row["info"]) == task.info
+    for task, row in zip(eval_tasks, environment.eval_dataset):
+        assert row["question"] == task.question
+        assert json.loads(row["info"]) == task.info
+
+
+def test_neutral_evaluator_matches_prime_rewards_and_metrics() -> None:
+    benchmark = GateRunnerBenchmark(seed=17)
+    _, eval_tasks = benchmark.build_tasks(train_examples=1, eval_examples=1)
+    task = eval_tasks[0]
+    completion_texts = [json.dumps(HONEST_CONFIG), "not json"]
+    neutral = benchmark.evaluate_group(
+        completions=completion_texts,
+        as_of_index=task.as_of_index,
+    )
+
+    environment = load_environment(seed=17, train_examples=1, eval_examples=1)
+    rubric = environment.rubric.rubrics[0]
+    states = [{}, {}]
+    prime_rewards = asyncio.run(
+        rubric.honest_reward(
+            completions=[
+                [{"role": "assistant", "content": value}]
+                for value in completion_texts
+            ],
+            infos=[task.info, task.info],
+            states=states,
+        )
+    )
+    assert prime_rewards == [record.reward for record in neutral]
+    assert [state["gate_runner_score"] for state in states] == [
+        record.score.metrics() for record in neutral
+    ]
+    assert [state["gate_runner_error"] for state in states] == [
+        record.error for record in neutral
+    ]
+
+
+def test_core_modules_do_not_import_platform_adapters() -> None:
+    core_path = Path(__file__).parents[1] / "gate_runner_core"
+    forbidden = {"datasets", "verifiers", "gate_runner_adapters"}
+    imported: set[str] = set()
+    for path in core_path.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".", 1)[0])
+    assert imported.isdisjoint(forbidden)
+
+
+def test_jsonl_cli_round_trip_preserves_grouped_trial_accounting(
+    tmp_path: Path,
+) -> None:
+    tasks_path = tmp_path / "tasks.jsonl"
+    input_path = tmp_path / "completions.jsonl"
+    output_path = tmp_path / "results.jsonl"
+    assert cli_main(
+        [
+            "tasks",
+            "--split",
+            "eval",
+            "--examples",
+            "1",
+            "--output",
+            str(tasks_path),
+        ]
+    ) == 0
+    task = json.loads(tasks_path.read_text(encoding="utf-8"))
+    task["completions"] = [json.dumps(HONEST_CONFIG), "not json"]
+    input_path.write_text(json.dumps(task) + "\n", encoding="utf-8")
+    assert cli_main(
+        [
+            "score",
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+        ]
+    ) == 0
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    assert result["task_id"] == "eval-000000"
+    assert len(result["results"]) == 2
+    assert result["results"][0]["metrics"]["trial_count"] == 2.0
+    assert result["results"][0]["metrics"]["validity"] == 1.0
+    assert result["results"][1]["metrics"]["validity"] == 0.0
+    assert result["results"][1]["reward"] == 0.0
+    assert result["results"][1]["error"].startswith("invalid JSON")

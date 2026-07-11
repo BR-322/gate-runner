@@ -1,13 +1,11 @@
 import csv
 import gzip
 import hashlib
-import json
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
-from datasets import Dataset
 
 from gate_runner_core.config import StrategyParser
 
@@ -626,53 +624,3 @@ class MarketData:
             ]
         )
         return "\n".join(lines)
-
-
-class TaskDatasetFactory:
-    def __init__(self, market: MarketData, windows: int, window_days: int, seed: int) -> None:
-        self.market = market
-        self.windows = windows
-        self.window_days = window_days
-        self.seed = seed
-
-    def build(self, train_examples: int, eval_examples: int) -> tuple[Dataset, Dataset]:
-        horizon = self.windows * self.window_days
-        first_start = 300
-        last_start = len(self.market.dates) - horizon - 1
-        split_start = first_start + int(0.70 * (last_start - first_start))
-        train_candidates = np.arange(
-            first_start,
-            split_start - horizon + 1,
-            5,
-            dtype=int,
-        )
-        eval_candidates = np.arange(split_start, last_start, 5, dtype=int)
-        if train_examples > len(train_candidates):
-            raise ValueError(
-                f"requested {train_examples} train examples but the embargoed panel only supports {len(train_candidates)}"
-            )
-        if eval_examples > len(eval_candidates):
-            raise ValueError(
-                f"requested {eval_examples} eval examples but the held-out panel only supports {len(eval_candidates)}"
-            )
-        rng = np.random.default_rng(self.seed)
-        train_indices = rng.permutation(train_candidates)[:train_examples]
-        eval_indices = rng.permutation(eval_candidates)[:eval_examples]
-
-        def rows(indices: np.ndarray) -> list[dict[str, str]]:
-            return [
-                {
-                    "question": self.market.render_prompt(int(as_of_index)),
-                    "answer": "",
-                    "info": json.dumps(
-                        {
-                            "as_of_index": int(as_of_index),
-                            "as_of_date": self.market.dates[int(as_of_index)],
-                            "data_source": self.market.source_label,
-                        }
-                    ),
-                }
-                for as_of_index in indices
-            ]
-
-        return Dataset.from_list(rows(train_indices)), Dataset.from_list(rows(eval_indices))

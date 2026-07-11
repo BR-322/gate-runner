@@ -137,27 +137,3 @@ Allowed choices and inclusive bounds:
             return StrategyConfig.model_validate(payload)
         except ValidationError as exc:
             raise ValueError(f"strategy schema violation: {exc}") from exc
-
-    @staticmethod
-    def completion_text(completion: object) -> str:
-        if isinstance(completion, str):
-            return completion
-        if not isinstance(completion, list):
-            return ""
-        for message in reversed(completion):
-            if isinstance(message, dict):
-                content = message.get("content")
-            else:
-                content = getattr(message, "content", None)
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                parts: list[str] = []
-                for part in content:
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        parts.append(part["text"])
-                    elif isinstance(getattr(part, "text", None), str):
-                        parts.append(part.text)
-                if parts:
-                    return "".join(parts)
-        return ""

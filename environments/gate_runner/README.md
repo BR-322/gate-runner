@@ -1,12 +1,19 @@
 # Gate Runner
 
-Gate Runner is a single-turn strategy-design environment whose grader penalizes
-the usual backtest search game. A model receives a point-in-time market brief
-and must return one strict JSON strategy config. The environment then evaluates
-that config on hidden sequential windows with trading costs, deflates Sharpe by
-the number of sampled configs in the rollout group, and rewards lower-tail
-cross-window performance. CSCV/PBO is reported as a selection-process
+Gate Runner is a platform-neutral strategy-design benchmark whose grader
+penalizes the usual backtest search game. A model receives a point-in-time
+market brief and must return one strict JSON strategy config. The benchmark
+evaluates that config on hidden sequential windows with trading costs, deflates
+Sharpe by the number of sampled configs in the rollout group, and rewards
+lower-tail cross-window performance. CSCV/PBO is reported as a selection-process
 diagnostic and does not affect training reward or pass status.
+
+The deterministic implementation lives in `gate_runner_core`; it imports no
+Prime, Verifiers, or Hugging Face modules. `gate_runner_adapters.prime` converts
+neutral tasks and evaluation records to the Prime/Verifiers interface, while
+`gate_runner.py` preserves the public Hub entrypoint. Direct Python and JSONL
+usage call the same grouped evaluator. See the repository-level
+[`docs/ADAPTERS.md`](../../docs/ADAPTERS.md) for the adapter contract.
 
 ## Environment contract
 
@@ -105,6 +112,8 @@ directly.
 
 ## Quickstart
 
+### Prime adapter
+
 Install and evaluate the public Hub environment:
 
 ```bash
@@ -140,6 +149,22 @@ Run the deterministic test suite with:
 ```bash
 uv run --project environments/gate_runner --group dev pytest -q
 ```
+
+### Platform-neutral CLI
+
+```bash
+uv run --project environments/gate_runner gate-runner tasks \
+  --dataset ecb_fx_carry --split eval --examples 24 \
+  --output tasks.jsonl
+
+uv run --project environments/gate_runner gate-runner score \
+  --dataset ecb_fx_carry --input completions.jsonl \
+  --output results.jsonl
+```
+
+Each input line to `score` must contain one task's complete `completions` array.
+Splitting a rollout group into independent calls changes DSR/PBO and is not a
+representative Gate Runner evaluation.
 
 ## Environment arguments
 
@@ -213,16 +238,14 @@ never affects training, reward, or pass status. On the pinned common sample,
 the proxy's forward-premium correlation is 0.93-0.96 across tenors, with a
 24-28 bp annualized mean absolute error.
 
-ECB rates are reference rates published for information, not executable dealing
-quotes. They provide close-like observations but no OHLCV or transaction-cost
-data, so Gate Runner uses a disclosed constant spread proxy. The 29 pairs also
-share the euro as their base currency; this is an FX cross-section, not the
-equity universe represented by the synthetic fixture.
-
 ECB rates are reference rates rather than dealing quotes, and policy/base rates
 are not directly investable funding rates. The compact backtester omits
 short-EUR positions, forward curves, cross-currency basis, collateral
-conventions, capital controls, tax, market impact, and intraday execution.
+conventions, capital controls, tax, market impact, and intraday execution. The
+ECB panel has no OHLCV or transaction-cost history, so Gate Runner uses a
+disclosed constant spread proxy. Its pairs share the euro as their base
+currency; this is an FX cross-section, not the equity universe represented by
+the synthetic fixture.
 Results are environment scores, not investment advice.
 
 ## Method references
