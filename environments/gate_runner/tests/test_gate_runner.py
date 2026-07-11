@@ -664,3 +664,14 @@ def test_jsonl_cli_round_trip_preserves_grouped_trial_accounting(
     assert result["results"][1]["metrics"]["validity"] == 0.0
     assert result["results"][1]["reward"] == 0.0
     assert result["results"][1]["error"].startswith("invalid JSON")
+
+
+def test_cli_demo_runs_the_real_grouped_evaluator(capsys: pytest.CaptureFixture) -> None:
+    assert cli_main(["demo"]) == 0
+    output = capsys.readouterr().out
+    assert "Gate Runner demo" in output
+    assert "Grouped trials: 2" in output
+    assert "120-day momentum" in output
+    assert "10-day concentrated breakout" in output
+    assert output.count("reward=") == 2
+    assert "each counted as a DSR trial" in output

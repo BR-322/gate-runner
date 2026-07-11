@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Sequence, TextIO
 
 from gate_runner_core.benchmark import DATASETS, GateRunnerBenchmark
+from gate_runner_core.examples import DEMO_STRATEGIES
 
 
 def _add_benchmark_arguments(parser: argparse.ArgumentParser) -> None:
@@ -113,12 +114,49 @@ def _score_groups(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_demo(args: argparse.Namespace) -> int:
+    benchmark = GateRunnerBenchmark(dataset="synthetic", seed=args.seed)
+    _, eval_tasks = benchmark.build_tasks(train_examples=1, eval_examples=1)
+    task = eval_tasks[0]
+    records = benchmark.evaluate_group(
+        completions=[completion for _, completion in DEMO_STRATEGIES],
+        as_of_index=task.as_of_index,
+    )
+    print("Gate Runner demo")
+    print(f"Dataset: deterministic synthetic panel (seed={args.seed})")
+    print(f"Hidden-window cutoff: {task.as_of_date}")
+    print(f"Grouped trials: {len(records)}")
+    for index, ((label, _), record) in enumerate(
+        zip(DEMO_STRATEGIES, records),
+        start=1,
+    ):
+        metrics = record.score.metrics()
+        print(f"{index}. {label}")
+        print(
+            "   "
+            f"reward={record.reward:.4f} "
+            f"passed={int(metrics['passed'])} "
+            f"dsr={metrics['dsr']:.4f} "
+            f"window_tail={metrics['window_tail_score']:.4f} "
+            f"es_ratio={metrics['expected_shortfall_ratio']:.4f}"
+        )
+    print("Both candidates were scored together; each counted as a DSR trial.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gate-runner",
-        description="Platform-neutral Gate Runner task and grouped-scoring CLI.",
+        description="Gate Runner task and grouped-scoring CLI.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    demo = subparsers.add_parser(
+        "demo",
+        help="Run a zero-auth grouped evaluation on synthetic data",
+    )
+    demo.add_argument("--seed", type=int, default=17)
+    demo.set_defaults(handler=_run_demo)
 
     tasks = subparsers.add_parser("tasks", help="Generate point-in-time tasks")
     _add_benchmark_arguments(tasks)
