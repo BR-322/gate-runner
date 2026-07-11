@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -43,6 +45,7 @@ def test_parser_accepts_only_one_schema_clean_json_object() -> None:
     parsed = StrategyParser.parse(json.dumps(HONEST_CONFIG))
     assert parsed.entry.type == "momentum_threshold"
     assert parsed.parameter_count == 5
+    assert parsed.universe_filter.rank_by == "relative_strength_252d"
 
     fenced = f"```json\n{json.dumps(HONEST_CONFIG)}\n```"
     with pytest.raises(ValueError, match="markdown fences"):
@@ -67,6 +70,7 @@ def test_prompt_contract_is_valid_json_without_range_placeholders() -> None:
     prompt = MarketData.synthetic(seed=17).render_prompt(as_of_index=1_500)
     assert "deliberately inactive syntax example" in prompt
     assert 'entry.type exactly "momentum_threshold"' in prompt
+    assert 'rank_by exactly "relative_strength_252d" or "long_eur_carry"' in prompt
     assert "aliases and alternative layouts are invalid" in prompt
 
 
@@ -108,6 +112,132 @@ def test_bundled_ecb_fx_snapshot_is_complete_and_supports_p3_scale() -> None:
     ).build(train_examples=400, eval_examples=200)
     assert len(train_dataset) == 400
     assert len(eval_dataset) == 200
+
+
+def test_public_short_rates_cover_redistributable_ecb_pairs_with_pit_features() -> None:
+    market = MarketData.ecb_fx(include_carry=True)
+    assert market.has_carry
+    assert len(market.symbols) == 28
+    assert "EURSGD" not in market.symbols
+    assert market.carry_returns.shape == market.close.shape
+    assert np.all(np.isfinite(market.carry_returns))
+    assert np.any(market.carry_returns != 0.0)
+
+    as_of_index = market.dates.index("2014-11-07")
+    snapshot = market.feature_snapshot(as_of_index)
+    aud = next(row for row in snapshot.rows if row["symbol"] == "EURAUD")
+    tenor = 0.25
+    expected_forward_points = (
+        (
+            1.0 + float(aud["foreign_reference_rate_pct"]) / 100.0 * tenor
+        )
+        / (1.0 + float(aud["eur_reference_rate_pct"]) / 100.0 * tenor)
+        - 1.0
+    ) * 100.0
+    assert aud["long_eur_carry_pct_pa"] == pytest.approx(
+        float(aud["eur_reference_rate_pct"])
+        - float(aud["foreign_reference_rate_pct"])
+    )
+    assert aud["cip_forward_points_3m_pct"] == pytest.approx(
+        expected_forward_points
+    )
+    prompt = market.render_prompt(as_of_index)
+    assert "long EUR funded in XXX" in prompt
+    assert "not an executable forward quote" in prompt
+
+
+def test_carry_uses_prior_available_rates_and_actual_calendar_days() -> None:
+    market = MarketData.ecb_fx(include_carry=True)
+    monday_index = market.dates.index("2014-11-10")
+    assert market.dates[monday_index - 1] == "2014-11-07"
+    aud_index = market.symbols.index("EURAUD")
+    expected = (
+        market.base_reference_rates_percent[monday_index - 1, aud_index]
+        - market.foreign_reference_rates_percent[monday_index - 1, aud_index]
+    ) / 100.0 * 3.0 / 365.0
+    assert market.carry_returns[monday_index, aud_index] == pytest.approx(expected)
+    assert expected < 0.0
+
+
+def test_future_rate_changes_do_not_change_a_point_in_time_brief() -> None:
+    market = MarketData.ecb_fx(include_carry=True)
+    as_of_index = market.dates.index("2014-11-07")
+    original = market.feature_snapshot(as_of_index)
+    foreign_rates = market.foreign_reference_rates_percent.copy()
+    base_rates = market.base_reference_rates_percent.copy()
+    carry_returns = market.carry_returns.copy()
+    foreign_rates[as_of_index:] += 100.0
+    base_rates[as_of_index:] -= 100.0
+    carry_returns[as_of_index:] *= -10.0
+    altered = MarketData(
+        dates=market.dates,
+        symbols=market.symbols,
+        close=market.close.copy(),
+        spread_bps=market.spread_bps.copy(),
+        source_label="future-rate-mutated test panel",
+        carry_returns=carry_returns,
+        foreign_reference_rates_percent=foreign_rates,
+        base_reference_rates_percent=base_rates,
+        rate_source_label="future-rate-mutated test source",
+    )
+    changed = altered.feature_snapshot(as_of_index)
+    assert changed.as_of_date == original.as_of_date
+    assert changed.regime == original.regime
+    rate_fields = {
+        "eur_reference_rate_pct",
+        "foreign_reference_rate_pct",
+        "long_eur_carry_pct_pa",
+        "cip_forward_points_3m_pct",
+    }
+    for original_row, changed_row in zip(original.rows, changed.rows):
+        assert original_row["symbol"] == changed_row["symbol"]
+        for field in rate_fields:
+            assert original_row[field] == changed_row[field]
+
+
+def test_spot_only_profile_is_a_carry_ablation() -> None:
+    spot_market = MarketData.ecb_fx()
+    carry_market = MarketData.ecb_fx(include_carry=True)
+    strategy = StrategyParser.parse(json.dumps(HONEST_CONFIG))
+    spot_result = StrategyBacktester(spot_market).evaluate(strategy, 1_500)
+    carry_result = StrategyBacktester(carry_market).evaluate(strategy, 1_500)
+    assert spot_result.carry_contribution == 0.0
+    assert carry_result.carry_contribution != 0.0
+    assert not np.array_equal(spot_result.daily_returns, carry_result.daily_returns)
+
+
+def test_carry_ranking_is_actionable_and_fails_closed_without_rates() -> None:
+    carry_rank_config = json.loads(json.dumps(HONEST_CONFIG))
+    carry_rank_config["entry"]["threshold"] = -0.10
+    carry_rank_config["universe_filter"]["rank_by"] = "long_eur_carry"
+    carry_rank = StrategyParser.parse(json.dumps(carry_rank_config))
+
+    synthetic_result = StrategyBacktester(MarketData.synthetic(seed=17)).evaluate(
+        carry_rank, 1_500
+    )
+    assert synthetic_result.active_fraction == 0.0
+    assert synthetic_result.carry_contribution == 0.0
+
+    carry_market = MarketData.ecb_fx(include_carry=True)
+    carry_result = StrategyBacktester(carry_market).evaluate(carry_rank, 1_500)
+    relative_config = json.loads(json.dumps(carry_rank_config))
+    relative_config["universe_filter"]["rank_by"] = "relative_strength_252d"
+    relative_rank = StrategyParser.parse(json.dumps(relative_config))
+    relative_result = StrategyBacktester(carry_market).evaluate(relative_rank, 1_500)
+    assert carry_result.active_fraction > 0.0
+    assert not np.array_equal(carry_result.daily_returns, relative_result.daily_returns)
+
+
+def test_boe_forward_panel_is_pinned_as_diagnostic_data() -> None:
+    path = (
+        Path(__file__).parents[1]
+        / "gate_runner_core"
+        / "data"
+        / "boe_gbpusd_spot_forward_2009_2024.csv.gz"
+    )
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "5913c8b8dabf0967281c33ae1bb15d2390378aa7bae5840f40e6747756e41c9c"
+    )
 
 
 def test_dsr_deflates_the_same_returns_as_trial_count_grows() -> None:
@@ -415,3 +545,14 @@ def test_environment_exposes_disjoint_train_and_eval_cutoffs() -> None:
     assert train_cutoffs.isdisjoint(eval_cutoffs)
     assert max(train_cutoffs) + 8 * 42 <= min(eval_cutoffs)
     assert environment.requires_group_rollouts
+
+
+def test_environment_loads_the_carry_aware_ecb_profile() -> None:
+    environment = load_environment(
+        dataset="ecb_fx_carry",
+        train_examples=1,
+        eval_examples=1,
+    )
+    prompt = environment.eval_dataset[0]["question"]
+    assert "public short-rate carry proxy" in prompt
+    assert "CIP_3m_forward_points_pct" in prompt

@@ -10,6 +10,6 @@ temperature = 0.7
 
 [[eval]]
 env_id = "br-322/gate-runner"
-env_args = { dataset = "ecb_fx", eval_examples = 200 }
+env_args = { dataset = "ecb_fx_carry", eval_examples = 200 }
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

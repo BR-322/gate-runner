@@ -22,6 +22,7 @@ class HonestRubric(vf.Rubric):
         "trial_count",
         "passed",
         "turnover",
+        "carry_contribution",
         "active_fraction",
         "active_windows",
     )

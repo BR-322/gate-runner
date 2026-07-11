@@ -13,7 +13,7 @@ reasoning_effort = "low"
 # Gate Runner training environment.
 [[env]]
 id = "br-322/gate-runner"
-args = { dataset = "ecb_fx", train_examples = 400, eval_examples = 200 }
+args = { dataset = "ecb_fx_carry", train_examples = 400, eval_examples = 200 }
 
 # Online evaluations during training. Uncomment to add [[eval.env]] blocks.
 

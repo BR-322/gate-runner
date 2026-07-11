@@ -1,0 +1,150 @@
+{
+  "coverage": {
+    "currencies": [
+      "AUD",
+      "BGN",
+      "BRL",
+      "CAD",
+      "CHF",
+      "CNY",
+      "CZK",
+      "DKK",
+      "EUR",
+      "GBP",
+      "HKD",
+      "HUF",
+      "IDR",
+      "ILS",
+      "INR",
+      "JPY",
+      "KRW",
+      "MXN",
+      "MYR",
+      "NOK",
+      "NZD",
+      "PHP",
+      "PLN",
+      "RON",
+      "SEK",
+      "THB",
+      "TRY",
+      "USD",
+      "ZAR"
+    ],
+    "end": "2024-12-31",
+    "rows": 133850,
+    "rows_by_currency": {
+      "AUD": 4303,
+      "BGN": 204,
+      "BRL": 6210,
+      "CAD": 4425,
+      "CHF": 4436,
+      "CNY": 5974,
+      "CZK": 4309,
+      "DKK": 4249,
+      "EUR": 6180,
+      "GBP": 4300,
+      "HKD": 4174,
+      "HUF": 4297,
+      "IDR": 4172,
+      "ILS": 6210,
+      "INR": 4623,
+      "JPY": 4156,
+      "KRW": 4218,
+      "MXN": 6108,
+      "MYR": 4175,
+      "NOK": 4284,
+      "NZD": 5302,
+      "PHP": 4138,
+      "PLN": 4298,
+      "RON": 4290,
+      "SEK": 4258,
+      "THB": 4952,
+      "TRY": 4274,
+      "USD": 6209,
+      "ZAR": 5122
+    },
+    "start": "2008-01-01"
+  },
+  "dataset": "Gate Runner public reference short rates",
+  "excluded": {
+    "SGD": "MAS SORA is technically suitable, but redistribution rights were not established when this snapshot was built."
+  },
+  "format_version": 1,
+  "output": {
+    "bundled_gzip_sha256": "b19ec2ce26925be2b5cec048c51e3da20cd55ee4626393c259591405a45a5cfc",
+    "normalized_csv_sha256": "e2e13c0e21a42d87d0dfe77dc475dcd11447795688dd0cb285350c256c5e653c",
+    "path": "public_short_rates_2008_2024.csv.gz"
+  },
+  "pit_policy": {
+    "BIS": "next weekday after observation date",
+    "BNB": "next weekday after effective date",
+    "meaning": "economic point-in-time reconstruction, not a historical archive of BIS or BNB release vintages"
+  },
+  "retrieved": "2026-07-11",
+  "sources": [
+    {
+      "name": "BIS Central Bank Policy Rates",
+      "publisher_sources_by_currency": {
+        "AUD": "Reserve Bank of Australia",
+        "BRL": "Central Bank of Brazil",
+        "CAD": "Bank of Canada",
+        "CHF": "Swiss National Bank",
+        "CNY": "People's Bank of China",
+        "CZK": "Czech National Bank",
+        "DKK": "Danmarks Nationalbank",
+        "EUR": "European Central Bank",
+        "GBP": "Bank of England",
+        "HKD": "Hong Kong Monetary Authority",
+        "HUF": "Hungarian National Bank",
+        "IDR": "Bank Indonesia",
+        "ILS": "Bank of Israel",
+        "INR": "Reserve Bank of India",
+        "JPY": "Bank of Japan",
+        "KRW": "Bank of Korea",
+        "MXN": "Bank of Mexico",
+        "MYR": "Bank Negara Malaysia",
+        "NOK": "Norges Bank",
+        "NZD": "Reserve Bank of New Zealand",
+        "PHP": "Bangko Sentral ng Pilipinas",
+        "PLN": "National Bank of Poland",
+        "RON": "National Bank of Romania",
+        "SEK": "Sveriges Riksbank",
+        "THB": "Bank of Thailand",
+        "TRY": "Central Bank of the Republic of Turkey",
+        "USD": "US Federal Reserve System",
+        "ZAR": "South African Reserve Bank"
+      },
+      "sha256": "2af3b1991275891ff1bcb5778a4dd95b451ed37d349ca2cb5b2f95ceac9345fa",
+      "transformation": "Selected public, normal-status daily observations for configured areas; assigned next weekday as a conservative availability date.",
+      "url": "https://data.bis.org/static/bulk/WS_CBPOL_csv_flat.zip"
+    },
+    {
+      "inputs": [
+        {
+          "sha256": "cc6bbb9538121759d8740859f550dbaf1c138e8beff4cd0dacb1cae7ff25f6cf",
+          "url": "https://www.bnb.bg/Statistics/StHistoricalData/StBIRAndIndices/StBIBaseInterestRate/index.htm?firstDays=01&firstMonths=01&firstYear=2008&lastDays=31&lastMonths=12&lastYear=2011&searchAction=true"
+        },
+        {
+          "sha256": "3a3741adbff5e5fae43d8d6ba204459f757baa068e91d8c9fd82a334ba7c93f4",
+          "url": "https://www.bnb.bg/Statistics/StHistoricalData/StBIRAndIndices/StBIBaseInterestRate/index.htm?firstDays=01&firstMonths=01&firstYear=2012&lastDays=31&lastMonths=12&lastYear=2015&searchAction=true"
+        },
+        {
+          "sha256": "b50d89d2d1853bc1a42d183a3e174c91428039c47e108684737420be91988649",
+          "url": "https://www.bnb.bg/Statistics/StHistoricalData/StBIRAndIndices/StBIBaseInterestRate/index.htm?firstDays=01&firstMonths=01&firstYear=2016&lastDays=31&lastMonths=12&lastYear=2019&searchAction=true"
+        },
+        {
+          "sha256": "a9ce33a541226c48bf55c15ffbcfb61a6e0092d55178485a00e7ea83778dcce2",
+          "url": "https://www.bnb.bg/Statistics/StHistoricalData/StBIRAndIndices/StBIBaseInterestRate/index.htm?firstDays=01&firstMonths=01&firstYear=2020&lastDays=31&lastMonths=12&lastYear=2023&searchAction=true"
+        },
+        {
+          "sha256": "4f60ea9fb12ce6563fb1fbfdf0b0d75de9db209adf31ee277f8a2edf93a12ec2",
+          "url": "https://www.bnb.bg/Statistics/StHistoricalData/StBIRAndIndices/StBIBaseInterestRate/index.htm?firstDays=01&firstMonths=01&firstYear=2024&lastDays=31&lastMonths=12&lastYear=2024&searchAction=true"
+        }
+      ],
+      "name": "Bulgarian National Bank Base Interest Rate",
+      "transformation": "Parsed the publisher's monthly HTML table without changing values; assigned next weekday as a conservative availability date.",
+      "url": "https://www.bnb.bg/Statistics/StHistoricalData/StBIRAndIndices/StBIBaseInterestRate/index.htm"
+    }
+  ]
+}

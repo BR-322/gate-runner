@@ -32,8 +32,12 @@ def load_environment(
         market = MarketData.synthetic(seed=seed)
     elif dataset == "ecb_fx":
         market = MarketData.ecb_fx()
+    elif dataset == "ecb_fx_carry":
+        market = MarketData.ecb_fx(include_carry=True)
     else:
-        raise ValueError("dataset must be 'synthetic' or 'ecb_fx'")
+        raise ValueError(
+            "dataset must be 'synthetic', 'ecb_fx', or 'ecb_fx_carry'"
+        )
     task_factory = TaskDatasetFactory(
         market=market,
         windows=windows,

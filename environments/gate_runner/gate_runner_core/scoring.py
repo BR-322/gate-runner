@@ -26,6 +26,7 @@ class BacktestResult:
     expected_shortfall_ratio: float
     raw_sharpe: float
     turnover: float
+    carry_contribution: float
     active_fraction: float
     active_windows: int
 
@@ -47,6 +48,7 @@ class HonestScore:
     trial_count: float = 0.0
     passed: float = 0.0
     turnover: float = 0.0
+    carry_contribution: float = 0.0
     active_fraction: float = 0.0
     active_windows: float = 0.0
 
@@ -138,17 +140,19 @@ class StrategyBacktester:
         all_returns: list[np.ndarray] = []
         window_sharpes: list[float] = []
         total_turnover = 0.0
+        total_carry_contribution = 0.0
         total_active_days = 0
         active_windows = 0
         for window_index in range(self.windows):
             start = as_of_index + window_index * self.window_days
             end = start + self.window_days
-            window_returns, turnover, active_days = self._run_window(
+            window_returns, turnover, carry_contribution, active_days = self._run_window(
                 strategy, start, end
             )
             all_returns.append(window_returns)
             window_sharpes.append(self.annualized_sharpe(window_returns))
             total_turnover += turnover
+            total_carry_contribution += carry_contribution
             total_active_days += active_days
             active_windows += int(active_days > 0)
         daily_returns = np.concatenate(all_returns)
@@ -170,13 +174,14 @@ class StrategyBacktester:
             ),
             raw_sharpe=self.annualized_sharpe(daily_returns),
             turnover=total_turnover,
+            carry_contribution=total_carry_contribution,
             active_fraction=total_active_days / (self.windows * self.window_days),
             active_windows=active_windows,
         )
 
     def _run_window(
         self, strategy: StrategyConfig, start: int, end: int
-    ) -> tuple[np.ndarray, float, int]:
+    ) -> tuple[np.ndarray, float, float, int]:
         symbol_count = len(self.market.symbols)
         active = np.zeros(symbol_count, dtype=bool)
         entry_price = np.zeros(symbol_count, dtype=float)
@@ -185,6 +190,7 @@ class StrategyBacktester:
         previous_weights = np.zeros(symbol_count, dtype=float)
         daily_returns = np.zeros(end - start, dtype=float)
         total_turnover = 0.0
+        total_carry_contribution = 0.0
         active_days = 0
 
         for offset, day_index in enumerate(range(start, end)):
@@ -199,10 +205,35 @@ class StrategyBacktester:
                 holding_days=holding_days,
             )
 
-            relative_strength = prior_close / self.market.close[prior_index - 252] - 1.0
-            order = np.argsort(relative_strength, kind="stable")
             k = strategy.universe_filter.k
-            eligible = order[-k:][::-1] if strategy.universe_filter.side == "top" else order[:k]
+            if strategy.universe_filter.rank_by == "relative_strength_252d":
+                ranking_signal = (
+                    prior_close / self.market.close[prior_index - 252] - 1.0
+                )
+                order = np.argsort(ranking_signal, kind="stable")
+                eligible = (
+                    order[-k:][::-1]
+                    if strategy.universe_filter.side == "top"
+                    else order[:k]
+                )
+            elif strategy.universe_filter.rank_by == "long_eur_carry":
+                if self.market.has_carry:
+                    ranking_signal = (
+                        self.market.base_reference_rates_percent[prior_index]
+                        - self.market.foreign_reference_rates_percent[prior_index]
+                    )
+                    order = np.argsort(ranking_signal, kind="stable")
+                    eligible = (
+                        order[-k:][::-1]
+                        if strategy.universe_filter.side == "top"
+                        else order[:k]
+                    )
+                else:
+                    eligible = np.asarray([], dtype=int)
+            else:
+                raise TypeError(
+                    f"unsupported universe rank: {strategy.universe_filter.rank_by}"
+                )
             entry_signal = self._entry_signal(strategy, prior_index)
             slots = strategy.sizing.max_positions - int(np.count_nonzero(active))
             if slots > 0:
@@ -229,7 +260,11 @@ class StrategyBacktester:
             ) / 10_000.0
             transaction_cost = float(np.dot(traded_weight, per_side_cost))
             total_turnover += float(np.sum(traded_weight))
-            asset_returns = self.market.close[day_index] / prior_close - 1.0
+            spot_returns = self.market.close[day_index] / prior_close - 1.0
+            carry_returns = self.market.carry_returns[day_index]
+            asset_returns = (1.0 + spot_returns) * (1.0 + carry_returns) - 1.0
+            carry_component = (1.0 + spot_returns) * carry_returns
+            total_carry_contribution += float(np.dot(weights, carry_component))
             daily_returns[offset] = max(
                 -0.99, float(np.dot(weights, asset_returns)) - transaction_cost
             )
@@ -253,7 +288,7 @@ class StrategyBacktester:
             )
             daily_returns[-1] = max(-0.99, daily_returns[-1] - liquidation_cost)
             total_turnover += float(np.sum(previous_weights))
-        return daily_returns, total_turnover, active_days
+        return daily_returns, total_turnover, total_carry_contribution, active_days
 
     @staticmethod
     def _apply_exits(
@@ -643,6 +678,7 @@ class HonestScorer:
                     trial_count=float(trial_count),
                     passed=float(passed),
                     turnover=result.turnover,
+                    carry_contribution=result.carry_contribution,
                     active_fraction=result.active_fraction,
                     active_windows=float(result.active_windows),
                 )

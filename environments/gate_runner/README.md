@@ -14,12 +14,14 @@ diagnostic and does not affect training reward or pass status.
 - **Task:** single-turn JSON generation
 - **Default panel:** deterministic synthetic 22-asset daily panel, used so the
   package is self-contained and redistributable
-- **Public real-data panel:** opt-in `ecb_fx` profile with 29 ECB daily euro
-  reference-rate series, 2009-2024
+- **Public real-data panels:** `ecb_fx` is a 29-pair ECB spot-only ablation;
+  `ecb_fx_carry` is the recommended 28-pair profile with public PIT reference
+  short rates and carry-aware returns, 2009-2024
 - **Point-in-time rule:** prompt features use data strictly before the episode
   cutoff; all grading windows begin at or after the cutoff
-- **Execution:** close-to-close signals, equal-weight long-only positions,
-  at most five concurrent positions
+- **Execution:** close-to-close signals, equal-weight positive positions, at
+  most five concurrent positions. In EURXXX, positive means long EUR funded in
+  XXX; the current action grammar does not express short-EUR positions.
 - **Costs:** 10 bps per traded side plus a per-symbol spread proxy
 - **Walk-forward horizon:** eight sequential 42-session windows by default
 - **Activity gate:** at least 10% active sessions across at least four grading
@@ -27,6 +29,12 @@ diagnostic and does not affect training reward or pass status.
 
 Malformed JSON, markdown-wrapped JSON, unknown keys, wrong primitive names, and
 out-of-range parameters receive exactly zero reward.
+
+`universe_filter.rank_by` can be `relative_strength_252d` on every panel or
+`long_eur_carry` on the carry-aware panel. This makes the rate differential an
+actionable ranking signal rather than prompt-only context. Selecting carry
+ranking on a panel without reference rates produces no eligible assets and
+therefore fails the activity gate.
 
 ## Reward
 
@@ -83,8 +91,12 @@ reward -= 0.01*complexity_excess
 The rubric also logs `validity`, `raw_sharpe`, `dsr`, `pbo`,
 `pbo_contribution`, `window_tail_score`, `reference_window_risk`,
 `daily_expected_shortfall`, `expected_shortfall_ratio`, `complexity`,
-`parameter_count`, `trial_count`, `passed`, `turnover`, `active_fraction`, and
-`active_windows`.
+`parameter_count`, `trial_count`, `passed`, `turnover`, `carry_contribution`,
+`active_fraction`, and `active_windows`.
+
+`carry_contribution` is the sum of daily portfolio return components attributable
+to the carry proxy before transaction costs; it is zero for the synthetic,
+caller-provided, and `ecb_fx` spot-only panels.
 
 Verifiers' generic `pass@k` display applies its own threshold to the shaped
 reward. Use the logged `passed` metric as the evaluation headline because it
@@ -105,7 +117,7 @@ baseline:
 
 ```bash
 prime eval run br-322/gate-runner \
-  -a '{"dataset":"ecb_fx","eval_examples":200}' \
+  -a '{"dataset":"ecb_fx_carry","eval_examples":200}' \
   -n 20 -r 3
 ```
 
@@ -138,7 +150,7 @@ uv run --project environments/gate_runner --group dev pytest -q
 | `eval_examples` | `24` | Number of held-out eval cutoffs |
 | `windows` | `8` | Even number of sequential CSCV windows, at least four |
 | `window_days` | `42` | Sessions per hidden window, at least 20 |
-| `dataset` | `synthetic` | Built-in panel: `synthetic` or `ecb_fx` |
+| `dataset` | `synthetic` | Built-in panel: `synthetic`, `ecb_fx`, or `ecb_fx_carry` |
 | `data_path` | `null` | Optional caller-owned long-form market CSV |
 
 Example with local data:
@@ -149,7 +161,7 @@ prime eval run gate-runner \
 ```
 
 `data_path` is an alternative to the built-in profiles and cannot be combined
-with `dataset="ecb_fx"`.
+with either ECB dataset profile.
 
 The CSV must be a complete rectangular panel with at least 1,600 dates and these
 columns:
@@ -176,10 +188,30 @@ its defining behavior.
 ## Data status and limitations
 
 The deterministic synthetic panel remains the default and the signature-test
-oracle. The opt-in ECB profile is the public real-data baseline. Its package
-contains the exact standard CSV returned by the documented ECB API query,
-gzip-compressed; runtime filtering and generated fields are listed in
+oracle. `ecb_fx_carry` is the recommended public real-data baseline, while
+`ecb_fx` provides the matched spot-only ablation. The package contains the exact
+standard CSV returned by the documented ECB API query plus a normalized,
+manifested reference-rate snapshot built from BIS and BNB observations. SGD is
+excluded from the carry profile because MAS SORA redistribution rights were not
+established; it remains available in the spot profile. Runtime filtering,
+availability rules, transformations, checksums, and source terms are listed in
 [DATA_PROVENANCE.md](DATA_PROVENANCE.md).
+
+For EURXXX, the carry profile uses the rate differential available on the prior
+market date and accrues it over actual calendar days:
+
+```text
+carry = (i_EUR - i_XXX) / 100 * calendar_days / 365
+total_return = (1 + spot_return) * (1 + carry) - 1 - costs
+```
+
+Prompts expose the EUR and foreign reference rates, annualized long-EUR carry,
+and a three-month covered-interest-parity forward-points proxy. The proxy is
+not called or treated as an executable forward rate. A bundled Bank of England
+GBP/USD spot/forward panel is used only by `scripts/validate_cip_proxy.py`; it
+never affects training, reward, or pass status. On the pinned common sample,
+the proxy's forward-premium correlation is 0.93-0.96 across tenors, with a
+24-28 bp annualized mean absolute error.
 
 ECB rates are reference rates published for information, not executable dealing
 quotes. They provide close-like observations but no OHLCV or transaction-cost
@@ -187,9 +219,11 @@ data, so Gate Runner uses a disclosed constant spread proxy. The 29 pairs also
 share the euro as their base currency; this is an FX cross-section, not the
 equity universe represented by the synthetic fixture.
 
-This compact backtester intentionally omits shorts, corporate actions, tax
-effects, borrow, and intraday execution. Results are environment scores, not
-investment advice.
+ECB rates are reference rates rather than dealing quotes, and policy/base rates
+are not directly investable funding rates. The compact backtester omits
+short-EUR positions, forward curves, cross-currency basis, collateral
+conventions, capital controls, tax, market impact, and intraday execution.
+Results are environment scores, not investment advice.
 
 ## Method references
 

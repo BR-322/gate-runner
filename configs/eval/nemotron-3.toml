@@ -11,6 +11,6 @@ sampling_args = { extra_body = { chat_template_kwargs = { enable_thinking = fals
 
 [[eval]]
 env_id = "br-322/gate-runner"
-env_args = { dataset = "ecb_fx", eval_examples = 200 }
+env_args = { dataset = "ecb_fx_carry", eval_examples = 200 }
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

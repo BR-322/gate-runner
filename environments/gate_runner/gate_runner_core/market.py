@@ -46,6 +46,9 @@ ECB_FX_CURRENCIES = (
 ECB_FX_SNAPSHOT_SHA256 = (
     "2e39da0d83bfbdb6d0575b1e481f2094ea974018b33473785d9349e2d04d7f3f"
 )
+PUBLIC_SHORT_RATES_SNAPSHOT_SHA256 = (
+    "b19ec2ce26925be2b5cec048c51e3da20cd55ee4626393c259591405a45a5cfc"
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,10 @@ class MarketData:
         close: np.ndarray,
         spread_bps: np.ndarray,
         source_label: str,
+        carry_returns: np.ndarray | None = None,
+        foreign_reference_rates_percent: np.ndarray | None = None,
+        base_reference_rates_percent: np.ndarray | None = None,
+        rate_source_label: str | None = None,
     ) -> None:
         close_array = np.asarray(close, dtype=float)
         spread_array = np.asarray(spread_bps, dtype=float)
@@ -81,11 +88,49 @@ class MarketData:
         if len(set(symbols)) != len(symbols):
             raise ValueError("symbols must be unique")
 
+        rate_inputs = (
+            carry_returns,
+            foreign_reference_rates_percent,
+            base_reference_rates_percent,
+        )
+        if any(value is not None for value in rate_inputs) and not all(
+            value is not None for value in rate_inputs
+        ):
+            raise ValueError("carry and both reference-rate arrays must be supplied together")
+        if all(value is not None for value in rate_inputs):
+            carry_array = np.asarray(carry_returns, dtype=float)
+            foreign_rate_array = np.asarray(
+                foreign_reference_rates_percent, dtype=float
+            )
+            base_rate_array = np.asarray(base_reference_rates_percent, dtype=float)
+            for name, value in (
+                ("carry_returns", carry_array),
+                ("foreign_reference_rates_percent", foreign_rate_array),
+                ("base_reference_rates_percent", base_rate_array),
+            ):
+                if value.shape != expected_shape or not np.all(np.isfinite(value)):
+                    raise ValueError(f"{name} must be finite and match dates x symbols")
+            if np.any(carry_array <= -1.0):
+                raise ValueError("carry returns must be greater than -100%")
+            if not rate_source_label:
+                raise ValueError("rate_source_label is required with reference rates")
+        else:
+            carry_array = np.zeros(expected_shape, dtype=float)
+            foreign_rate_array = np.zeros(expected_shape, dtype=float)
+            base_rate_array = np.zeros(expected_shape, dtype=float)
+            if rate_source_label is not None:
+                raise ValueError("rate_source_label requires reference-rate arrays")
+
         self.dates = dates
         self.symbols = symbols
         self.close = close_array
         self.spread_bps = spread_array
         self.source_label = source_label
+        self.carry_returns = carry_array
+        self.foreign_reference_rates_percent = foreign_rate_array
+        self.base_reference_rates_percent = base_rate_array
+        self.rate_source_label = rate_source_label
+        self.has_carry = rate_source_label is not None
         self.returns = np.zeros_like(close_array)
         self.returns[1:] = close_array[1:] / close_array[:-1] - 1.0
 
@@ -143,7 +188,7 @@ class MarketData:
         )
 
     @classmethod
-    def ecb_fx(cls) -> "MarketData":
+    def ecb_fx(cls, include_carry: bool = False) -> "MarketData":
         """Load the bundled, source-standard ECB reference-rate snapshot."""
         snapshot_path = (
             Path(__file__).parent
@@ -220,7 +265,8 @@ class MarketData:
         ):
             raise ValueError("ECB FX snapshot does not match the pinned 2009-2024 panel")
 
-        symbols = tuple(f"EUR{currency}" for currency in ECB_FX_CURRENCIES)
+        profile_currencies = ECB_FX_CURRENCIES
+        symbols = tuple(f"EUR{currency}" for currency in profile_currencies)
         close = np.asarray(
             [
                 [series[currency][observation_date] for currency in ECB_FX_CURRENCIES]
@@ -228,16 +274,148 @@ class MarketData:
             ],
             dtype=float,
         )
+        kwargs: dict[str, object] = {}
+        source_label = (
+            "ECB daily euro foreign exchange reference rates "
+            "(2009-2024; source values unmodified)"
+        )
+        if include_carry:
+            profile_currencies = tuple(
+                currency for currency in ECB_FX_CURRENCIES if currency != "SGD"
+            )
+            keep_indices = [
+                ECB_FX_CURRENCIES.index(currency) for currency in profile_currencies
+            ]
+            close = close[:, keep_indices]
+            symbols = tuple(f"EUR{currency}" for currency in profile_currencies)
+            foreign_rates, eur_rates = cls._load_public_short_rates(
+                dates=dates,
+                currencies=profile_currencies,
+            )
+            calendar_days = np.diff(np.asarray(dates, dtype="datetime64[D]")).astype(
+                float
+            )
+            carry_returns = np.zeros_like(close)
+            # EURXXX is foreign-currency units per EUR. A positive position is
+            # long EUR funded in XXX, so its annual carry is i_EUR - i_XXX.
+            carry_returns[1:] = (
+                (eur_rates[:-1] - foreign_rates[:-1])
+                / 100.0
+                * calendar_days[:, None]
+                / 365.0
+            )
+            kwargs = {
+                "carry_returns": carry_returns,
+                "foreign_reference_rates_percent": foreign_rates,
+                "base_reference_rates_percent": eur_rates,
+                "rate_source_label": (
+                    "BIS policy rates and the BNB base rate; economic-PIT "
+                    "availability rules; SGD excluded for redistribution"
+                ),
+            }
+            source_label += " with public short-rate carry proxy (28 pairs)"
         return cls(
             dates=dates,
             symbols=symbols,
             close=close,
             spread_bps=np.full_like(close, 5.0),
-            source_label=(
-                "ECB daily euro foreign exchange reference rates "
-                "(2009-2024; source values unmodified)"
-            ),
+            source_label=source_label,
+            **kwargs,
         )
+
+    @classmethod
+    def _load_public_short_rates(
+        cls,
+        dates: tuple[str, ...],
+        currencies: tuple[str, ...],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        snapshot_path = (
+            Path(__file__).parent
+            / "data"
+            / "public_short_rates_2008_2024.csv.gz"
+        )
+        if not snapshot_path.is_file():
+            raise ValueError(f"public short-rate snapshot is not a file: {snapshot_path}")
+        snapshot_sha256 = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+        if snapshot_sha256 != PUBLIC_SHORT_RATES_SNAPSHOT_SHA256:
+            raise ValueError("public short-rate snapshot checksum does not match provenance")
+
+        required_currencies = set(currencies) | {"EUR"}
+        observations: dict[str, list[tuple[str, str, float]]] = {
+            currency: [] for currency in required_currencies
+        }
+        rate_types: dict[str, set[str]] = {
+            currency: set() for currency in required_currencies
+        }
+        with gzip.open(snapshot_path, mode="rt", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            required_columns = {
+                "currency",
+                "observation_date",
+                "available_date",
+                "rate_percent",
+                "rate_type",
+                "source_name",
+                "source_series",
+                "source_area_code",
+            }
+            if reader.fieldnames is None or set(reader.fieldnames) != required_columns:
+                raise ValueError("public short-rate snapshot has unexpected columns")
+            seen: set[tuple[str, str]] = set()
+            for row in reader:
+                currency = row["currency"]
+                if currency not in required_currencies:
+                    continue
+                key = (currency, row["observation_date"])
+                if key in seen:
+                    raise ValueError(f"duplicate public short-rate observation: {key}")
+                seen.add(key)
+                if row["available_date"] < row["observation_date"]:
+                    raise ValueError("short-rate availability precedes observation")
+                value = float(row["rate_percent"])
+                if not np.isfinite(value):
+                    raise ValueError("public short-rate snapshot contains a non-finite rate")
+                observations[currency].append(
+                    (row["available_date"], row["observation_date"], value)
+                )
+                rate_types[currency].add(row["rate_type"])
+
+        expected_types = {
+            currency: (
+                {"base_rate"}
+                if currency == "BGN"
+                else {"overnight_benchmark"}
+                if currency == "SGD"
+                else {"policy_rate"}
+            )
+            for currency in required_currencies
+        }
+        if rate_types != expected_types:
+            raise ValueError("public short-rate snapshot has unexpected rate types")
+
+        aligned: dict[str, np.ndarray] = {}
+        for currency, values in observations.items():
+            if not values:
+                raise ValueError(f"no public short-rate rows for {currency}")
+            values.sort(key=lambda item: (item[0], item[1]))
+            result = np.full(len(dates), np.nan, dtype=float)
+            source_index = 0
+            latest = np.nan
+            for market_index, market_date in enumerate(dates):
+                while (
+                    source_index < len(values)
+                    and values[source_index][0] <= market_date
+                ):
+                    latest = values[source_index][2]
+                    source_index += 1
+                result[market_index] = latest
+            if not np.all(np.isfinite(result)):
+                raise ValueError(f"public short-rate history does not cover {currency}")
+            aligned[currency] = result
+
+        foreign_rates = np.column_stack([aligned[currency] for currency in currencies])
+        eur_rates = np.repeat(aligned["EUR"][:, None], len(currencies), axis=1)
+        return foreign_rates, eur_rates
 
     @classmethod
     def from_csv(cls, path: Path) -> "MarketData":
@@ -326,25 +504,51 @@ class MarketData:
         lower, upper = np.quantile(np.asarray(historical_vol), [1.0 / 3.0, 2.0 / 3.0])
         regime = "low-vol" if current_vol <= lower else "high-vol" if current_vol >= upper else "mid-vol"
 
-        rows = tuple(
-            {
+        rows_list: list[dict[str, float | str]] = []
+        for index, symbol in enumerate(self.symbols):
+            row: dict[str, float | str] = {
                 "symbol": symbol,
                 "return_252d": float(ret_252[index]),
                 "realized_vol_20d": float(vol_20[index]),
                 "rs_rank_20d": float(rank_20[index]),
                 "rs_rank_252d": float(rank_252[index]),
             }
-            for index, symbol in enumerate(self.symbols)
-        )
+            if self.has_carry:
+                foreign_rate = float(
+                    self.foreign_reference_rates_percent[last, index]
+                )
+                eur_rate = float(self.base_reference_rates_percent[last, index])
+                tenor_years = 0.25
+                forward_ratio = (1.0 + foreign_rate / 100.0 * tenor_years) / (
+                    1.0 + eur_rate / 100.0 * tenor_years
+                )
+                row.update(
+                    {
+                        "eur_reference_rate_pct": eur_rate,
+                        "foreign_reference_rate_pct": foreign_rate,
+                        "long_eur_carry_pct_pa": eur_rate - foreign_rate,
+                        "cip_forward_points_3m_pct": (forward_ratio - 1.0) * 100.0,
+                    }
+                )
+            rows_list.append(row)
+        rows = tuple(rows_list)
+        summary = {
+            "median_return_252d": float(np.median(ret_252)),
+            "median_realized_vol_20d": current_vol,
+            "dispersion_return_252d": float(np.std(ret_252, ddof=1)),
+        }
+        if self.has_carry:
+            summary["median_long_eur_carry_pct_pa"] = float(
+                np.median(
+                    self.base_reference_rates_percent[last]
+                    - self.foreign_reference_rates_percent[last]
+                )
+            )
         return FeatureSnapshot(
             as_of_date=self.dates[as_of_index],
             regime=regime,
             rows=rows,
-            summary={
-                "median_return_252d": float(np.median(ret_252)),
-                "median_realized_vol_20d": current_vol,
-                "dispersion_return_252d": float(np.std(ret_252, ddof=1)),
-            },
+            summary=summary,
         )
 
     def render_prompt(self, as_of_index: int) -> str:
@@ -361,16 +565,54 @@ class MarketData:
                 f"median_20d_vol={snapshot.summary['median_realized_vol_20d']:.4f}, "
                 f"return_dispersion={snapshot.summary['dispersion_return_252d']:.4f}."
             ),
-            "Symbols (252d_return, 20d_realized_vol, 20d_RS_percentile, 252d_RS_percentile):",
         ]
-        lines.extend(
-            (
-                f"- {row['symbol']}: {row['return_252d']:.4f}, "
-                f"{row['realized_vol_20d']:.4f}, {row['rs_rank_20d']:.3f}, "
-                f"{row['rs_rank_252d']:.3f}"
+        if self.has_carry:
+            lines.extend(
+                [
+                    (
+                        f"Reference short rates: {self.rate_source_label}. Values "
+                        "respect their recorded availability dates."
+                    ),
+                    (
+                        "EURXXX means foreign-currency units per EUR. A positive "
+                        "position is long EUR funded in XXX; grading accrues the "
+                        "displayed EUR-minus-foreign carry over actual calendar days."
+                    ),
+                    (
+                        "The 3m forward-points field is a covered-interest-parity "
+                        "proxy, not an executable forward quote."
+                    ),
+                    (
+                        "Symbols (252d_return, 20d_realized_vol, 20d_RS_percentile, "
+                        "252d_RS_percentile, EUR_rate_pct, foreign_rate_pct, "
+                        "long_EUR_carry_pct_pa, CIP_3m_forward_points_pct):"
+                    ),
+                ]
             )
-            for row in snapshot.rows
-        )
+            lines.extend(
+                (
+                    f"- {row['symbol']}: {row['return_252d']:.4f}, "
+                    f"{row['realized_vol_20d']:.4f}, {row['rs_rank_20d']:.3f}, "
+                    f"{row['rs_rank_252d']:.3f}, "
+                    f"{row['eur_reference_rate_pct']:.4f}, "
+                    f"{row['foreign_reference_rate_pct']:.4f}, "
+                    f"{row['long_eur_carry_pct_pa']:.4f}, "
+                    f"{row['cip_forward_points_3m_pct']:.4f}"
+                )
+                for row in snapshot.rows
+            )
+        else:
+            lines.append(
+                "Symbols (252d_return, 20d_realized_vol, 20d_RS_percentile, 252d_RS_percentile):"
+            )
+            lines.extend(
+                (
+                    f"- {row['symbol']}: {row['return_252d']:.4f}, "
+                    f"{row['realized_vol_20d']:.4f}, {row['rs_rank_20d']:.3f}, "
+                    f"{row['rs_rank_252d']:.3f}"
+                )
+                for row in snapshot.rows
+            )
         lines.extend(
             [
                 (

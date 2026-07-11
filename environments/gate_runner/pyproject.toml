@@ -2,7 +2,7 @@
 name = "gate-runner"
 description = "Honesty-shaped strategy design with DSR and lower-tail window grading"
 tags = ["finance", "honest-evaluation", "train", "eval"]
-version = "0.2.1"
+version = "0.3.0"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 dependencies = [
@@ -25,6 +25,7 @@ include = [
     "gate_runner.py",
     "gate_runner_core/**/*.py",
     "gate_runner_core/data/*.csv.gz",
+    "gate_runner_core/data/*.json",
     "DATA_PROVENANCE.md",
     "LICENSE",
     "pyproject.toml",

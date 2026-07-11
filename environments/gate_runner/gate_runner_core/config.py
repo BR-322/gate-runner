@@ -55,6 +55,9 @@ ExitConfig = Annotated[
 
 
 class UniverseFilter(StrictModel):
+    rank_by: Literal["relative_strength_252d", "long_eur_carry"] = (
+        "relative_strength_252d"
+    )
     side: Literal["top", "bottom"]
     k: int = Field(ge=1, le=10)
 
@@ -96,6 +99,7 @@ class StrategyParser:
     "trail_pct": 0.25
   },
   "universe_filter": {
+    "rank_by": "relative_strength_252d",
     "side": "top",
     "k": 1
   },
@@ -113,7 +117,7 @@ Allowed choices and inclusive bounds:
 - exit.type exactly "stop_loss_pct": stop_pct number 0.02 to 0.25
 - exit.type exactly "trailing_stop": trail_pct number 0.02 to 0.25
 - exit.type exactly "time_exit": max_holding_days integer 3 to 126
-- universe_filter: side exactly "top" or "bottom"; k integer 1 to 10
+- universe_filter: rank_by exactly "relative_strength_252d" or "long_eur_carry"; side exactly "top" or "bottom"; k integer 1 to 10. long_eur_carry has no eligible assets on panels without reference rates
 - sizing: method exactly "equal_weight"; max_positions integer 1 to 5"""
 
     @classmethod
