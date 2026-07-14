@@ -26,13 +26,15 @@ usage call the same grouped evaluator. See the repository-level
   short rates and carry-aware returns, 2009-2024
 - **Point-in-time rule:** prompt features use data strictly before the episode
   cutoff; all grading windows begin at or after the cutoff
-- **Execution:** close-to-close signals, equal-weight positive positions, at
-  most five concurrent positions. In EURXXX, positive means long EUR funded in
-  XXX; the current action grammar does not express short-EUR positions.
+- **Execution:** close-to-close signals and positive positions sized by equal
+  weight, inverse volatility, or constrained fractional Kelly, with at most
+  five concurrent positions. In EURXXX, positive means long EUR funded in XXX;
+  the current action grammar does not express short-EUR positions or leverage.
 - **Costs:** 10 bps per traded side plus a per-symbol spread proxy
 - **Walk-forward horizon:** eight sequential 42-session windows by default
-- **Activity gate:** at least 10% active sessions across at least four grading
-  windows
+- **Activity gate:** at least 10% exposure-weighted activity, meaningful
+  positions in at least four grading windows, and at least 25% mean gross
+  exposure on meaningfully active sessions
 
 Malformed JSON, markdown-wrapped JSON, unknown keys, wrong primitive names, and
 out-of-range parameters receive exactly zero reward.
@@ -43,12 +45,27 @@ actionable ranking signal rather than prompt-only context. Selecting carry
 ranking on a panel without reference rates produces no eligible assets and
 therefore fails the activity gate.
 
+`sizing.method` supports:
+
+- `equal_weight`, the default and backward-compatible control;
+- `inverse_volatility`, using 63-252 strictly trailing carry-adjusted sessions,
+  a model-selected per-position cap from 0.20 to 1.00, and at most 100% gross
+  exposure; and
+- `fractional_kelly`, using 63-252 strictly trailing carry-adjusted sessions, a
+  fraction from 0.10 to 0.50, and a per-position cap from 0.10 to 0.50.
+
+Fractional Kelly uses a diagonal estimate, fixed 50% mean shrinkage toward
+zero, and a fixed 5% annualized volatility floor. Negative estimated edges
+receive zero weight. The result is long-only and unlevered; unused allocation
+remains cash. Full covariance Kelly, model-controlled shrinkage, and leverage
+are intentionally outside the grammar.
+
 ## Reward
 
 Malformed output receives `0`. Every schema-valid config receives a dense score
 inside one of two non-overlapping tiers. Define normalized violations for the
-DSR, window-tail, expected-shortfall, active-session, and active-window gates;
-then:
+DSR, window-tail, expected-shortfall, exposure-weighted activity,
+active-window, and active-gross-exposure gates; then:
 
 ```text
 fail_proximity = 1 - max(normalized gate violations)
@@ -64,10 +81,16 @@ pass_reward = 0.60 + 0.30*pass_robustness
 reward -= 0.01*complexity_excess
 ```
 
-- **DSR** is the Deflated Sharpe Ratio probability. Its expected-max-Sharpe
-  benchmark uses every sampled rollout in the same episode group as a trial,
-  including invalid attempts, and the valid trials' Sharpe dispersion. A null
-  standard error is used when fewer than two valid Sharpe estimates exist.
+- **DSR** is the reward-bearing Deflated Sharpe Ratio probability. Its
+  expected-max-Sharpe benchmark uses every sampled rollout in the same episode
+  group as a trial, including invalid attempts. The valid trials' observed
+  daily-Sharpe dispersion is floored at the null standard error
+  `1/sqrt(observations - 1)`, so a policy cannot weaken deflation by collapsing
+  its return streams. **diagnostic_dsr** instead uses observed dispersion and
+  the ceiling of behavioral effective rank as the descriptive trial count.
+  `reward_minus_diagnostic_dsr` is a signed tripwire for the gap between the
+  adversarial and descriptive calculations; a negative value means the reward
+  calculation is more conservative.
 - **window_tail_score** computes each window's cost-adjusted log growth and
   divides it by an exogenous reference risk: the median underlying-asset daily
   volatility over the hidden horizon, scaled to the window length. It averages
@@ -87,19 +110,31 @@ reward -= 0.01*complexity_excess
   divided by `sqrt(window_days)`. Ratios below `5.0` pass; `3.0` or lower
   receives the full robustness margin. This catches concentrated daily losses
   that profitable 42-session windows can otherwise conceal.
-- **complexity_excess** is `0` for five active numeric parameters and `1` for
-  six; its bounded penalty cannot overturn reward-tier ordering.
+- **complexity_excess** is `0` for the five numeric parameters in the smallest
+  equal-weight strategy and `1` for the nine in the largest fractional-Kelly
+  strategy. Its bounded penalty cannot overturn reward-tier ordering.
 - **passed** requires `DSR > 0.90`, `window_tail_score > -0.50`,
-  `expected_shortfall_ratio < 5.0`, active positions on at least 10% of grading
-  sessions, and activity in at least four of eight grading windows. Activity is
-  rewarded only until eligibility is reached, preventing an incentive for
-  gratuitous exposure or turnover.
+  `expected_shortfall_ratio < 5.0`, average gross exposure of at least 10%
+  across grading sessions, a weight of at least 1% in at least four of eight
+  grading windows, and mean gross exposure of at least 25% on those meaningful
+  sessions. Exposure is rewarded only until eligibility is reached, preventing
+  an incentive for gratuitous risk or turnover.
 
-The rubric also logs `validity`, `raw_sharpe`, `dsr`, `pbo`,
-`pbo_contribution`, `window_tail_score`, `reference_window_risk`,
-`daily_expected_shortfall`, `expected_shortfall_ratio`, `complexity`,
-`parameter_count`, `trial_count`, `passed`, `turnover`, `carry_contribution`,
-`active_fraction`, and `active_windows`.
+The rubric also logs `validity`, `raw_sharpe`, `dsr`, `diagnostic_dsr`,
+`reward_minus_diagnostic_dsr`, `behavioral_effective_rank`, its ratio to valid
+trials, mean absolute pairwise return correlation, observed and reward DSR
+dispersion, `pbo`, `pbo_contribution`, `window_tail_score`,
+`reference_window_risk`, `daily_expected_shortfall`,
+`expected_shortfall_ratio`, `complexity`, `parameter_count`, `trial_count`,
+`passed`, `turnover`, `carry_contribution`, exposure-weighted and session
+activity, average and median gross exposure, mean active gross exposure, cash
+fraction, maximum weight, effective position count, realized volatility, and
+`active_windows`.
+
+For backward metric compatibility, `active_fraction` remains present, but v0.5
+defines it as exposure-weighted activity and also emits the identical explicit
+`exposure_weighted_active_fraction`. `active_session_fraction` preserves the
+descriptive fraction of sessions with a position of at least 1%.
 
 `carry_contribution` is the sum of daily portfolio return components attributable
 to the carry proxy before transaction costs; it is zero for the synthetic,
@@ -149,6 +184,17 @@ Run the deterministic test suite with:
 ```bash
 uv run --project environments/gate_runner --group dev pytest -q
 ```
+
+Run the fixed sizing-control matrix with:
+
+```bash
+uv run --project environments/gate_runner \
+  python scripts/run_baseline_matrix.py
+```
+
+The checked-in protocol, summary, and per-cutoff records are in the repository
+[`reports/`](../../reports/) directory. This is a deterministic control matrix,
+not a model baseline or evidence of investment performance.
 
 ### Platform-neutral CLI
 
@@ -237,6 +283,12 @@ GBP/USD spot/forward panel is used only by `scripts/validate_cip_proxy.py`; it
 never affects training, reward, or pass status. On the pinned common sample,
 the proxy's forward-premium correlation is 0.93-0.96 across tenors, with a
 24-28 bp annualized mean absolute error.
+
+Fractional Kelly estimates each active asset's edge from its trailing
+carry-adjusted unconditional mean. It does not estimate signal-conditional
+win probabilities or a full covariance matrix. It is included as an
+experimental sizing control, not as a claim that Kelly weights are known with
+precision.
 
 ECB rates are reference rates rather than dealing quotes, and policy/base rates
 are not directly investable funding rates. The compact backtester omits

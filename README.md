@@ -29,9 +29,9 @@ Gate Runner demo
 Dataset: deterministic synthetic panel (seed=17)
 Grouped trials: 2
 1. 120-day momentum
-   reward=0.6571 passed=1 dsr=0.9190 ...
+   reward=0.4463 passed=0 dsr=0.8905 ...
 2. 10-day concentrated breakout
-   reward=0.3502 passed=0 dsr=0.6690 ...
+   reward=0.3333 passed=0 dsr=0.6063 ...
 ```
 
 There is no model call, account, or canned score in this path. The demo invokes
@@ -69,7 +69,8 @@ The schema supports:
 - momentum-threshold, mean-reversion-z-score, and channel-breakout entries;
 - fixed-stop, trailing-stop, and time exits;
 - relative-strength or long-EUR-carry universe ranking; and
-- equal-weight sizing with at most five concurrent positions.
+- equal-weight, inverse-volatility, or constrained fractional-Kelly sizing with
+  at most five concurrent positions.
 
 Unknown keys, markdown fences, aliases, invalid primitive names, and
 out-of-range values fail closed to zero reward. Every task includes the exact
@@ -78,7 +79,8 @@ schema and bounds; the implementation is in
 
 The current FX grammar expresses positive EUR exposure only. It does not yet
 support short-EUR positions, leverage, forward-tenor choice, or market-neutral
-pair portfolios.
+pair portfolios. Fractional Kelly is deliberately long-only, capped, unlevered,
+and allowed to retain cash.
 
 ## Why it exists
 
@@ -92,21 +94,26 @@ windows and economic frictions more attractive than blind parameter search.
 ## How grading works
 
 - Every rollout in an episode group counts as another trial.
-- Deflated Sharpe Ratio adjusts for selection and non-normal returns.
+- Reward DSR uses a fixed-N dispersion floor so a policy cannot reduce its own
+  deflation by emitting behaviorally duplicate trials.
+- Descriptive DSR, effective rank, and pairwise return correlation expose when
+  that floor is doing load-bearing work.
 - Lower-tail window performance rewards stability across regimes.
 - Normalized expected shortfall catches concentrated daily losses.
 - Trading costs and FX funding carry enter realized returns.
 - CSCV/PBO describes group selection risk without becoming a training target.
 - Strict point-in-time boundaries keep future observations out of prompts.
-- Bounded complexity and activity rules discourage fragile or trivial policies.
+- Bounded complexity and exposure-aware activity rules discourage fragile or
+  trivial policies.
 
 A hard pass requires all of the following:
 
 - `DSR > 0.90`;
 - `window_tail_score > -0.50`;
 - `expected_shortfall_ratio < 5.0`;
-- active positions on at least 10% of grading sessions; and
-- activity in at least four of eight grading windows.
+- at least 10% exposure-weighted activity across the grading horizon;
+- meaningful activity in at least four of eight grading windows; and
+- at least 25% mean gross exposure on meaningfully active sessions.
 
 The shaped reward is dense on both sides of that boundary. A failing strategy
 improves only by closing its worst normalized violation; crossing every gate
@@ -114,6 +121,9 @@ creates a hard reward jump; a passing strategy continues improving toward a
 robust margin.
 
 PBO is logged as a group diagnostic and does not affect reward or pass status.
+The evaluator also logs the signed reward-minus-diagnostic DSR gap, behavioral
+effective rank, mean absolute return correlation, gross exposure, cash,
+concentration, and realized volatility.
 In the Prime adapter, the evaluation headline is the logged `passed` metric,
 not Verifiers' generic `pass@k` threshold over the shaped reward. See the
 [environment contract](environments/gate_runner/README.md) for the exact reward
@@ -254,7 +264,9 @@ The public package contains:
 - untouched Bank of England GBP/USD spot/forward observations used only to
   validate the CIP proxy.
 
-The data rebuild scripts are under [`scripts/`](scripts/). On the pinned common
+The data rebuild and fixed-baseline scripts are under [`scripts/`](scripts/).
+The v0.5 sizing-control results and exact per-cutoff records are in
+[`reports/`](reports/). On the pinned common
 sample, the policy-rate CIP proxy has a 0.93–0.96 correlation with actual BoE
 forward premia across 1–12 month tenors, but a roughly 25–28 bp annualized mean
 absolute error. That is useful directional validation, not evidence that the
@@ -278,7 +290,7 @@ The `ecb_fx` profile is intentionally retained. It provides:
 Existing v0.2 strategy JSON remains schema-compatible because a missing
 `universe_filter.rank_by` defaults to `relative_strength_252d`. This is not a
 promise of bit-for-bit v0.2 behavior: the current prompt, metrics,
-documentation, and package version are v0.4. For an exact historical checkout,
+documentation, and package version are v0.5. For an exact historical checkout,
 use commit [`99ac503`](https://github.com/BR-322/gate-runner/tree/99ac503).
 
 New training and evaluation configs use `ecb_fx_carry`; `ecb_fx` should be used
@@ -289,6 +301,7 @@ as an ablation or historical comparison, not as the default baseline.
 ```text
 configs/                         # Prime evaluation and RL model-family configs
 docs/                            # Platform adapter contract
+reports/                         # Reproducible fixed-baseline results
 scripts/                         # Reproducible public-data and validation tools
 environments/gate_runner/
 ├── gate_runner.py               # Stable Prime Hub entrypoint
@@ -315,16 +328,18 @@ the example configs.
 
 ## Current status
 
-- v0.4 separates the benchmark core from its Prime adapter and supports Python,
-  JSONL, and Prime interfaces.
+- v0.5 adds exposure-aware activity, behavioral-diversity diagnostics,
+  inverse-volatility sizing, and constrained fractional Kelly.
+- The benchmark core remains separate from its Prime adapter and supports
+  Python, JSONL, and Prime interfaces.
 - Adapter parity tests require every interface to produce exactly the same
   rewards, metrics, and errors.
 - Bundled data, PIT joins, carry accounting, carry ranking, forward validation,
   and byte-for-byte artifact rebuilds are implemented.
 - The earlier v0.2 Qwen 4B preflight used the spot-only profile and should not
-  be combined with v0.4 carry-aware results.
-- The next milestone is a fresh multi-model preflight and baseline report on
-  `ecb_fx_carry`.
+  be combined with v0.5 carry-aware results.
+- The fixed sizing matrix is complete; the next milestone is a fresh
+  multi-model preflight on `ecb_fx_carry` before any training run.
 
 The deterministic synthetic panel is a test fixture, not evidence of
 real-world investment performance. ECB reference rates are informational rather

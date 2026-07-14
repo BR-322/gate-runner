@@ -6,6 +6,9 @@ import numpy as np
 
 from gate_runner_core.config import (
     ChannelBreakout,
+    EqualWeightSizing,
+    FractionalKellySizing,
+    InverseVolatilitySizing,
     MeanReversionZScore,
     MomentumThreshold,
     StopLossPct,
@@ -28,7 +31,27 @@ class BacktestResult:
     turnover: float
     carry_contribution: float
     active_fraction: float
+    exposure_weighted_active_fraction: float
+    active_session_fraction: float
+    average_gross_exposure: float
+    median_gross_exposure: float
+    mean_active_gross_exposure: float
+    cash_fraction: float
+    max_weight: float
+    effective_position_count: float
+    realized_volatility: float
     active_windows: int
+
+
+@dataclass(frozen=True)
+class _WindowResult:
+    daily_returns: np.ndarray
+    turnover: float
+    carry_contribution: float
+    gross_exposure: np.ndarray
+    meaningful_active: np.ndarray
+    effective_position_count: np.ndarray
+    max_weight: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -37,6 +60,13 @@ class HonestScore:
     validity: float = 0.0
     raw_sharpe: float = 0.0
     dsr: float = 0.0
+    diagnostic_dsr: float = 0.0
+    reward_minus_diagnostic_dsr: float = 0.0
+    behavioral_effective_rank: float = 0.0
+    behavioral_effective_rank_ratio: float = 0.0
+    mean_pairwise_absolute_correlation: float = 0.0
+    observed_trial_sharpe_std: float = 0.0
+    reward_trial_sharpe_std: float = 0.0
     pbo: float = 0.0
     pbo_contribution: float = 0.0
     window_tail_score: float = 0.0
@@ -50,6 +80,15 @@ class HonestScore:
     turnover: float = 0.0
     carry_contribution: float = 0.0
     active_fraction: float = 0.0
+    exposure_weighted_active_fraction: float = 0.0
+    active_session_fraction: float = 0.0
+    average_gross_exposure: float = 0.0
+    median_gross_exposure: float = 0.0
+    mean_active_gross_exposure: float = 0.0
+    cash_fraction: float = 0.0
+    max_weight: float = 0.0
+    effective_position_count: float = 0.0
+    realized_volatility: float = 0.0
     active_windows: float = 0.0
 
     def metrics(self) -> dict[str, float]:
@@ -59,6 +98,9 @@ class HonestScore:
 class StrategyBacktester:
     WINDOW_TAIL_FRACTION = 0.25
     DAILY_EXPECTED_SHORTFALL_FRACTION = 0.05
+    MEANINGFUL_WEIGHT = 0.01
+    KELLY_MEAN_SHRINKAGE = 0.50
+    VOLATILITY_FLOOR_ANNUALIZED = 0.05
 
     def __init__(
         self,
@@ -138,28 +180,47 @@ class StrategyBacktester:
 
     def evaluate(self, strategy: StrategyConfig, as_of_index: int) -> BacktestResult:
         all_returns: list[np.ndarray] = []
+        all_gross_exposure: list[np.ndarray] = []
+        all_meaningful_active: list[np.ndarray] = []
+        all_effective_position_counts: list[np.ndarray] = []
+        all_max_weights: list[np.ndarray] = []
         window_sharpes: list[float] = []
         total_turnover = 0.0
         total_carry_contribution = 0.0
-        total_active_days = 0
         active_windows = 0
         for window_index in range(self.windows):
             start = as_of_index + window_index * self.window_days
             end = start + self.window_days
-            window_returns, turnover, carry_contribution, active_days = self._run_window(
-                strategy, start, end
-            )
-            all_returns.append(window_returns)
-            window_sharpes.append(self.annualized_sharpe(window_returns))
-            total_turnover += turnover
-            total_carry_contribution += carry_contribution
-            total_active_days += active_days
-            active_windows += int(active_days > 0)
+            window = self._run_window(strategy, start, end)
+            all_returns.append(window.daily_returns)
+            all_gross_exposure.append(window.gross_exposure)
+            all_meaningful_active.append(window.meaningful_active)
+            all_effective_position_counts.append(window.effective_position_count)
+            all_max_weights.append(window.max_weight)
+            window_sharpes.append(self.annualized_sharpe(window.daily_returns))
+            total_turnover += window.turnover
+            total_carry_contribution += window.carry_contribution
+            active_windows += int(np.any(window.meaningful_active))
         daily_returns = np.concatenate(all_returns)
         window_returns = np.vstack(all_returns)
+        gross_exposure = np.concatenate(all_gross_exposure)
+        meaningful_active = np.concatenate(all_meaningful_active)
+        effective_position_counts = np.concatenate(all_effective_position_counts)
+        max_weights = np.concatenate(all_max_weights)
         reference_window_risk = self._reference_window_risk(as_of_index)
         daily_expected_shortfall = self.expected_shortfall(daily_returns)
         reference_daily_risk = reference_window_risk / np.sqrt(self.window_days)
+        average_gross_exposure = float(np.mean(gross_exposure))
+        mean_active_gross_exposure = (
+            float(np.mean(gross_exposure[meaningful_active]))
+            if np.any(meaningful_active)
+            else 0.0
+        )
+        effective_position_count = (
+            float(np.mean(effective_position_counts[meaningful_active]))
+            if np.any(meaningful_active)
+            else 0.0
+        )
         return BacktestResult(
             daily_returns=daily_returns,
             window_sharpes=np.asarray(window_sharpes, dtype=float),
@@ -175,13 +236,26 @@ class StrategyBacktester:
             raw_sharpe=self.annualized_sharpe(daily_returns),
             turnover=total_turnover,
             carry_contribution=total_carry_contribution,
-            active_fraction=total_active_days / (self.windows * self.window_days),
+            active_fraction=average_gross_exposure,
+            exposure_weighted_active_fraction=average_gross_exposure,
+            active_session_fraction=float(np.mean(meaningful_active)),
+            average_gross_exposure=average_gross_exposure,
+            median_gross_exposure=float(np.median(gross_exposure)),
+            mean_active_gross_exposure=mean_active_gross_exposure,
+            cash_fraction=float(np.mean(1.0 - np.clip(gross_exposure, 0.0, 1.0))),
+            max_weight=float(np.max(max_weights, initial=0.0)),
+            effective_position_count=effective_position_count,
+            realized_volatility=(
+                float(np.std(daily_returns, ddof=1) * np.sqrt(252.0))
+                if len(daily_returns) > 1
+                else 0.0
+            ),
             active_windows=active_windows,
         )
 
     def _run_window(
         self, strategy: StrategyConfig, start: int, end: int
-    ) -> tuple[np.ndarray, float, float, int]:
+    ) -> _WindowResult:
         symbol_count = len(self.market.symbols)
         active = np.zeros(symbol_count, dtype=bool)
         entry_price = np.zeros(symbol_count, dtype=float)
@@ -189,9 +263,12 @@ class StrategyBacktester:
         holding_days = np.zeros(symbol_count, dtype=int)
         previous_weights = np.zeros(symbol_count, dtype=float)
         daily_returns = np.zeros(end - start, dtype=float)
+        gross_exposure = np.zeros(end - start, dtype=float)
+        meaningful_active = np.zeros(end - start, dtype=bool)
+        effective_position_count = np.zeros(end - start, dtype=float)
+        max_weight = np.zeros(end - start, dtype=float)
         total_turnover = 0.0
         total_carry_contribution = 0.0
-        active_days = 0
 
         for offset, day_index in enumerate(range(start, end)):
             prior_index = day_index - 1
@@ -248,11 +325,17 @@ class StrategyBacktester:
                     peak_price[candidates] = prior_close[candidates]
                     holding_days[candidates] = 0
 
-            weights = np.zeros(symbol_count, dtype=float)
             active_count = int(np.count_nonzero(active))
-            if active_count:
-                weights[active] = 1.0 / active_count
-                active_days += 1
+            weights = self._position_weights(strategy, active, prior_index)
+            gross_exposure[offset] = float(np.sum(np.abs(weights)))
+            meaningful_active[offset] = bool(
+                np.any(np.abs(weights) >= self.MEANINGFUL_WEIGHT)
+            )
+            if gross_exposure[offset] > 0.0:
+                effective_position_count[offset] = (
+                    gross_exposure[offset] ** 2 / float(np.sum(weights**2))
+                )
+                max_weight[offset] = float(np.max(np.abs(weights)))
 
             traded_weight = np.abs(weights - previous_weights)
             per_side_cost = (
@@ -288,7 +371,102 @@ class StrategyBacktester:
             )
             daily_returns[-1] = max(-0.99, daily_returns[-1] - liquidation_cost)
             total_turnover += float(np.sum(previous_weights))
-        return daily_returns, total_turnover, total_carry_contribution, active_days
+        return _WindowResult(
+            daily_returns=daily_returns,
+            turnover=total_turnover,
+            carry_contribution=total_carry_contribution,
+            gross_exposure=gross_exposure,
+            meaningful_active=meaningful_active,
+            effective_position_count=effective_position_count,
+            max_weight=max_weight,
+        )
+
+    def _position_weights(
+        self,
+        strategy: StrategyConfig,
+        active: np.ndarray,
+        prior_index: int,
+    ) -> np.ndarray:
+        weights = np.zeros(len(self.market.symbols), dtype=float)
+        active_indices = np.flatnonzero(active)
+        if not len(active_indices):
+            return weights
+
+        sizing = strategy.sizing
+        if isinstance(sizing, EqualWeightSizing):
+            weights[active_indices] = 1.0 / len(active_indices)
+            return weights
+
+        history = self._trailing_total_returns(
+            prior_index=prior_index,
+            lookback_days=sizing.lookback_days,
+        )[:, active_indices]
+        volatility_floor = self.VOLATILITY_FLOOR_ANNUALIZED / np.sqrt(252.0)
+
+        if isinstance(sizing, InverseVolatilitySizing):
+            volatility = np.maximum(
+                np.std(history, axis=0, ddof=1),
+                volatility_floor,
+            )
+            weights[active_indices] = self._normalize_with_cap(
+                1.0 / volatility,
+                max_weight=sizing.max_weight,
+            )
+            return weights
+
+        if isinstance(sizing, FractionalKellySizing):
+            expected_return = (
+                self.KELLY_MEAN_SHRINKAGE * np.mean(history, axis=0)
+            )
+            variance = np.maximum(
+                np.var(history, axis=0, ddof=1),
+                volatility_floor**2,
+            )
+            allocations = sizing.fraction * np.maximum(expected_return, 0.0) / variance
+            allocations = np.clip(allocations, 0.0, sizing.max_weight)
+            gross = float(np.sum(allocations))
+            if gross > 1.0:
+                allocations /= gross
+            weights[active_indices] = allocations
+            return weights
+
+        raise TypeError(f"unsupported sizing config: {type(sizing)}")
+
+    def _trailing_total_returns(
+        self,
+        prior_index: int,
+        lookback_days: int,
+    ) -> np.ndarray:
+        start = prior_index - lookback_days + 1
+        spot_returns = self.market.returns[start : prior_index + 1]
+        carry_returns = self.market.carry_returns[start : prior_index + 1]
+        return (1.0 + spot_returns) * (1.0 + carry_returns) - 1.0
+
+    @staticmethod
+    def _normalize_with_cap(
+        raw_weights: np.ndarray,
+        max_weight: float,
+    ) -> np.ndarray:
+        raw = np.asarray(raw_weights, dtype=float)
+        result = np.zeros_like(raw)
+        remaining = np.ones(len(raw), dtype=bool)
+        remaining_gross = 1.0
+        while np.any(remaining) and remaining_gross > 1e-12:
+            remaining_raw = raw[remaining]
+            raw_total = float(np.sum(remaining_raw))
+            if raw_total <= 0.0:
+                break
+            proposed = remaining_gross * remaining_raw / raw_total
+            capped = proposed > max_weight
+            remaining_indices = np.flatnonzero(remaining)
+            if not np.any(capped):
+                result[remaining_indices] = proposed
+                break
+            capped_indices = remaining_indices[capped]
+            result[capped_indices] = max_weight
+            remaining[capped_indices] = False
+            remaining_gross = max(0.0, 1.0 - float(np.sum(result)))
+        return result
 
     @staticmethod
     def _apply_exits(
@@ -409,6 +587,37 @@ class DeflatedSharpeRatio:
         return float(np.clip(NormalDist().cdf(test_statistic), 0.0, 1.0))
 
 
+class BehavioralDiversity:
+    @staticmethod
+    def summarize(return_streams: np.ndarray) -> tuple[float, float]:
+        """Return effective rank and mean absolute pairwise correlation."""
+        streams = np.asarray(return_streams, dtype=float)
+        if streams.ndim != 2:
+            raise ValueError("return_streams must be strategies x sessions")
+        if not streams.shape[0]:
+            return 0.0, 0.0
+        centered = streams - np.mean(streams, axis=1, keepdims=True)
+        norms = np.linalg.norm(centered, axis=1)
+        informative = norms > 1e-12
+        if not np.any(informative):
+            return 0.0, 0.0
+        normalized = centered[informative] / norms[informative, None]
+        singular_values = np.linalg.svd(normalized, compute_uv=False)
+        energy = singular_values**2
+        probabilities = energy / float(np.sum(energy))
+        positive = probabilities > 0.0
+        effective_rank = float(
+            np.exp(-np.sum(probabilities[positive] * np.log(probabilities[positive])))
+        )
+        if len(normalized) < 2:
+            mean_absolute_correlation = 0.0
+        else:
+            correlations = normalized @ normalized.T
+            upper = correlations[np.triu_indices(len(normalized), k=1)]
+            mean_absolute_correlation = float(np.mean(np.abs(upper)))
+        return effective_rank, mean_absolute_correlation
+
+
 class ProbabilityBacktestOverfitting:
     @classmethod
     def estimate(cls, window_scores: np.ndarray) -> float:
@@ -462,14 +671,17 @@ class HonestScorer:
     EXPECTED_SHORTFALL_FAILURE_CEILING = 12.0
     MIN_ACTIVE_FRACTION = 0.10
     MIN_ACTIVE_WINDOWS = 4
+    MIN_MEAN_ACTIVE_GROSS_EXPOSURE = 0.25
 
     VALID_FLOOR = 0.10
     FAIL_PROXIMITY_SPAN = 0.35
     PASS_FLOOR = 0.60
     PASS_ROBUSTNESS_SPAN = 0.30
     COMPLEXITY_WEIGHT = 0.01
-    MIN_COMPLEXITY = 5.0 / 8.0
-    MAX_COMPLEXITY = 6.0 / 8.0
+    MIN_COMPLEXITY = (
+        StrategyConfig.MIN_PARAMETER_COUNT / StrategyConfig.MAX_PARAMETER_COUNT
+    )
+    MAX_COMPLEXITY = 1.0
 
     def __init__(self, backtester: StrategyBacktester) -> None:
         self.backtester = backtester
@@ -483,6 +695,7 @@ class HonestScorer:
         expected_shortfall_ratio: float,
         active_fraction: float,
         active_windows: float,
+        mean_active_gross_exposure: float = 1.0,
     ) -> bool:
         return (
             dsr > cls.DSR_PASS_THRESHOLD
@@ -490,6 +703,8 @@ class HonestScorer:
             and expected_shortfall_ratio < cls.EXPECTED_SHORTFALL_PASS_THRESHOLD
             and active_fraction >= cls.MIN_ACTIVE_FRACTION
             and active_windows >= cls.MIN_ACTIVE_WINDOWS
+            and mean_active_gross_exposure
+            >= cls.MIN_MEAN_ACTIVE_GROSS_EXPOSURE
         )
 
     def _shaped_reward(
@@ -500,6 +715,7 @@ class HonestScorer:
         complexity: float,
         active_fraction: float,
         active_windows: float,
+        mean_active_gross_exposure: float = 1.0,
     ) -> float:
         passed = self._passes_gate(
             dsr,
@@ -507,6 +723,7 @@ class HonestScorer:
             expected_shortfall_ratio,
             active_fraction,
             active_windows,
+            mean_active_gross_exposure,
         )
 
         if passed:
@@ -583,6 +800,15 @@ class HonestScorer:
                     0.0,
                     1.0,
                 ),
+                np.clip(
+                    (
+                        self.MIN_MEAN_ACTIVE_GROSS_EXPOSURE
+                        - mean_active_gross_exposure
+                    )
+                    / self.MIN_MEAN_ACTIVE_GROSS_EXPOSURE,
+                    0.0,
+                    1.0,
+                ),
             )
             proximity = 1.0 - max(float(value) for value in violations)
             reward = self.VALID_FLOOR + self.FAIL_PROXIMITY_SPAN * proximity
@@ -627,11 +853,39 @@ class HonestScorer:
             [result.raw_sharpe / np.sqrt(252.0) for result in valid_results],
             dtype=float,
         )
-        trial_sharpe_std = (
+        observed_trial_sharpe_std = (
             float(np.std(trial_daily_sharpes, ddof=1))
             if len(trial_daily_sharpes) > 1
-            else None
+            else 0.0
         )
+        observation_count = (
+            len(valid_results[0].daily_returns) if valid_results else 0
+        )
+        reward_dispersion_floor = (
+            1.0 / np.sqrt(observation_count - 1.0)
+            if observation_count > 1
+            else 0.0
+        )
+        reward_trial_sharpe_std = max(
+            observed_trial_sharpe_std,
+            reward_dispersion_floor,
+        )
+        if valid_results:
+            behavioral_effective_rank, mean_absolute_correlation = (
+                BehavioralDiversity.summarize(
+                    np.vstack([result.daily_returns for result in valid_results])
+                )
+            )
+            effective_trial_count = max(
+                1,
+                int(np.ceil(behavioral_effective_rank)),
+            )
+            effective_rank_ratio = behavioral_effective_rank / len(valid_results)
+        else:
+            behavioral_effective_rank = 0.0
+            mean_absolute_correlation = 0.0
+            effective_trial_count = 1
+            effective_rank_ratio = 0.0
         scores: list[HonestScore] = []
         valid_index = 0
         for strategy, result in zip(strategies, backtests):
@@ -643,7 +897,12 @@ class HonestScorer:
             dsr = DeflatedSharpeRatio.probability(
                 result.daily_returns,
                 trials=trial_count,
-                trial_sharpe_std=trial_sharpe_std,
+                trial_sharpe_std=reward_trial_sharpe_std,
+            )
+            diagnostic_dsr = DeflatedSharpeRatio.probability(
+                result.daily_returns,
+                trials=effective_trial_count,
+                trial_sharpe_std=observed_trial_sharpe_std,
             )
             complexity = strategy.normalized_complexity
             passed = self._passes_gate(
@@ -652,6 +911,7 @@ class HonestScorer:
                 result.expected_shortfall_ratio,
                 result.active_fraction,
                 result.active_windows,
+                result.mean_active_gross_exposure,
             )
             reward = self._shaped_reward(
                 dsr=dsr,
@@ -660,6 +920,7 @@ class HonestScorer:
                 complexity=complexity,
                 active_fraction=result.active_fraction,
                 active_windows=result.active_windows,
+                mean_active_gross_exposure=result.mean_active_gross_exposure,
             )
             scores.append(
                 HonestScore(
@@ -667,6 +928,13 @@ class HonestScorer:
                     validity=1.0,
                     raw_sharpe=result.raw_sharpe,
                     dsr=dsr,
+                    diagnostic_dsr=diagnostic_dsr,
+                    reward_minus_diagnostic_dsr=dsr - diagnostic_dsr,
+                    behavioral_effective_rank=behavioral_effective_rank,
+                    behavioral_effective_rank_ratio=effective_rank_ratio,
+                    mean_pairwise_absolute_correlation=mean_absolute_correlation,
+                    observed_trial_sharpe_std=observed_trial_sharpe_std,
+                    reward_trial_sharpe_std=reward_trial_sharpe_std,
                     pbo=pbo,
                     pbo_contribution=pbo_contribution,
                     window_tail_score=result.window_tail_score,
@@ -680,6 +948,19 @@ class HonestScorer:
                     turnover=result.turnover,
                     carry_contribution=result.carry_contribution,
                     active_fraction=result.active_fraction,
+                    exposure_weighted_active_fraction=(
+                        result.exposure_weighted_active_fraction
+                    ),
+                    active_session_fraction=result.active_session_fraction,
+                    average_gross_exposure=result.average_gross_exposure,
+                    median_gross_exposure=result.median_gross_exposure,
+                    mean_active_gross_exposure=(
+                        result.mean_active_gross_exposure
+                    ),
+                    cash_fraction=result.cash_fraction,
+                    max_weight=result.max_weight,
+                    effective_position_count=result.effective_position_count,
+                    realized_volatility=result.realized_volatility,
                     active_windows=float(result.active_windows),
                 )
             )

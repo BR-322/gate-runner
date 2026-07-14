@@ -1,5 +1,5 @@
 import json
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -67,20 +67,52 @@ class EqualWeightSizing(StrictModel):
     max_positions: int = Field(ge=1, le=5)
 
 
+class InverseVolatilitySizing(StrictModel):
+    method: Literal["inverse_volatility"]
+    max_positions: int = Field(ge=1, le=5)
+    lookback_days: int = Field(ge=63, le=252)
+    max_weight: float = Field(ge=0.20, le=1.00)
+
+
+class FractionalKellySizing(StrictModel):
+    method: Literal["fractional_kelly"]
+    max_positions: int = Field(ge=1, le=5)
+    lookback_days: int = Field(ge=63, le=252)
+    fraction: float = Field(ge=0.10, le=0.50)
+    max_weight: float = Field(ge=0.10, le=0.50)
+
+
+SizingConfig = Annotated[
+    EqualWeightSizing | InverseVolatilitySizing | FractionalKellySizing,
+    Field(discriminator="method"),
+]
+
+
 class StrategyConfig(StrictModel):
     entry: EntryConfig
     exit: ExitConfig
     universe_filter: UniverseFilter
-    sizing: EqualWeightSizing
+    sizing: SizingConfig
+
+    MIN_PARAMETER_COUNT: ClassVar[int] = 5
+    MAX_PARAMETER_COUNT: ClassVar[int] = 9
 
     @property
     def parameter_count(self) -> int:
         entry_count = 3 if isinstance(self.entry, ChannelBreakout) else 2
-        return entry_count + 1 + 1 + 1
+        if isinstance(self.sizing, EqualWeightSizing):
+            sizing_count = 1
+        elif isinstance(self.sizing, InverseVolatilitySizing):
+            sizing_count = 3
+        elif isinstance(self.sizing, FractionalKellySizing):
+            sizing_count = 4
+        else:
+            raise TypeError(f"unsupported sizing config: {type(self.sizing)}")
+        return entry_count + 1 + 1 + sizing_count
 
     @property
     def normalized_complexity(self) -> float:
-        return self.parameter_count / 8.0
+        return self.parameter_count / self.MAX_PARAMETER_COUNT
 
     def canonical_json(self) -> str:
         return self.model_dump_json(exclude_none=True)
@@ -118,7 +150,9 @@ Allowed choices and inclusive bounds:
 - exit.type exactly "trailing_stop": trail_pct number 0.02 to 0.25
 - exit.type exactly "time_exit": max_holding_days integer 3 to 126
 - universe_filter: rank_by exactly "relative_strength_252d" or "long_eur_carry"; side exactly "top" or "bottom"; k integer 1 to 10. long_eur_carry has no eligible assets on panels without reference rates
-- sizing: method exactly "equal_weight"; max_positions integer 1 to 5"""
+- sizing.method exactly "equal_weight": max_positions integer 1 to 5
+- sizing.method exactly "inverse_volatility": max_positions integer 1 to 5; lookback_days integer 63 to 252; max_weight number 0.20 to 1.00
+- sizing.method exactly "fractional_kelly": max_positions integer 1 to 5; lookback_days integer 63 to 252; fraction number 0.10 to 0.50; max_weight number 0.10 to 0.50. Fractional Kelly is long-only, unlevered, and may retain cash"""
 
     @classmethod
     def parse(cls, text: str) -> StrategyConfig:

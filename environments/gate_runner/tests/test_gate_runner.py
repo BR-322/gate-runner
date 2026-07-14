@@ -13,6 +13,7 @@ from gate_runner_core.benchmark import GateRunnerBenchmark
 from gate_runner_core.config import StrategyParser
 from gate_runner_core.market import ECB_FX_CURRENCIES, MarketData
 from gate_runner_core.scoring import (
+    BehavioralDiversity,
     DeflatedSharpeRatio,
     HonestScorer,
     ProbabilityBacktestOverfitting,
@@ -44,6 +45,21 @@ OVERFIT_CONFIG = {
     "sizing": {"method": "equal_weight", "max_positions": 1},
 }
 
+INVERSE_VOLATILITY_SIZING = {
+    "method": "inverse_volatility",
+    "max_positions": 5,
+    "lookback_days": 126,
+    "max_weight": 0.50,
+}
+
+FRACTIONAL_KELLY_SIZING = {
+    "method": "fractional_kelly",
+    "max_positions": 5,
+    "lookback_days": 126,
+    "fraction": 0.25,
+    "max_weight": 0.35,
+}
+
 
 def test_parser_accepts_only_one_schema_clean_json_object() -> None:
     parsed = StrategyParser.parse(json.dumps(HONEST_CONFIG))
@@ -64,6 +80,35 @@ def test_parser_accepts_only_one_schema_clean_json_object() -> None:
     extra_key["leak"] = True
     with pytest.raises(ValueError, match="schema violation"):
         StrategyParser.parse(json.dumps(extra_key))
+
+
+def test_sizing_grammar_is_additive_bounded_and_counted_as_complexity() -> None:
+    equal_weight = StrategyParser.parse(json.dumps(HONEST_CONFIG))
+    inverse_payload = json.loads(json.dumps(HONEST_CONFIG))
+    inverse_payload["sizing"] = INVERSE_VOLATILITY_SIZING
+    inverse_volatility = StrategyParser.parse(json.dumps(inverse_payload))
+    kelly_payload = json.loads(json.dumps(HONEST_CONFIG))
+    kelly_payload["sizing"] = FRACTIONAL_KELLY_SIZING
+    fractional_kelly = StrategyParser.parse(json.dumps(kelly_payload))
+
+    assert equal_weight.parameter_count == 5
+    assert inverse_volatility.parameter_count == 7
+    assert fractional_kelly.parameter_count == 8
+    assert (
+        equal_weight.normalized_complexity
+        < inverse_volatility.normalized_complexity
+        < fractional_kelly.normalized_complexity
+    )
+
+    full_kelly = json.loads(json.dumps(kelly_payload))
+    full_kelly["sizing"]["fraction"] = 1.0
+    with pytest.raises(ValueError, match="schema violation"):
+        StrategyParser.parse(json.dumps(full_kelly))
+
+    leveraged = json.loads(json.dumps(kelly_payload))
+    leveraged["sizing"]["max_weight"] = 1.0
+    with pytest.raises(ValueError, match="schema violation"):
+        StrategyParser.parse(json.dumps(leveraged))
 
 
 def test_prompt_contract_is_valid_json_without_range_placeholders() -> None:
@@ -210,6 +255,71 @@ def test_spot_only_profile_is_a_carry_ablation() -> None:
     assert not np.array_equal(spot_result.daily_returns, carry_result.daily_returns)
 
 
+def test_sizing_weights_are_trailing_capped_and_unlevered() -> None:
+    market = MarketData.ecb_fx(include_carry=True)
+    backtester = StrategyBacktester(market)
+    active = np.ones(len(market.symbols), dtype=bool)
+    prior_index = 1_500
+
+    inverse_payload = json.loads(json.dumps(HONEST_CONFIG))
+    inverse_payload["sizing"] = INVERSE_VOLATILITY_SIZING
+    inverse = StrategyParser.parse(json.dumps(inverse_payload))
+    inverse_weights = backtester._position_weights(inverse, active, prior_index)
+    assert np.sum(inverse_weights) == pytest.approx(1.0)
+    assert np.all(inverse_weights >= 0.0)
+    assert np.max(inverse_weights) <= INVERSE_VOLATILITY_SIZING["max_weight"]
+
+    kelly_payload = json.loads(json.dumps(HONEST_CONFIG))
+    kelly_payload["sizing"] = FRACTIONAL_KELLY_SIZING
+    kelly = StrategyParser.parse(json.dumps(kelly_payload))
+    kelly_weights = backtester._position_weights(kelly, active, prior_index)
+    assert 0.0 < np.sum(kelly_weights) <= 1.0
+    assert np.all(kelly_weights >= 0.0)
+    assert np.max(kelly_weights) <= FRACTIONAL_KELLY_SIZING["max_weight"]
+
+    altered_close = market.close.copy()
+    altered_carry = market.carry_returns.copy()
+    altered_close[prior_index + 1 :] *= 10.0
+    altered_carry[prior_index + 1 :] += 0.50
+    altered = MarketData(
+        dates=market.dates,
+        symbols=market.symbols,
+        close=altered_close,
+        spread_bps=market.spread_bps.copy(),
+        source_label="future-mutated sizing test panel",
+        carry_returns=altered_carry,
+        foreign_reference_rates_percent=(
+            market.foreign_reference_rates_percent.copy()
+        ),
+        base_reference_rates_percent=market.base_reference_rates_percent.copy(),
+        rate_source_label="future-mutated sizing test rates",
+    )
+    altered_weights = StrategyBacktester(altered)._position_weights(
+        kelly,
+        active,
+        prior_index,
+    )
+    assert np.array_equal(kelly_weights, altered_weights)
+
+
+def test_exposure_metrics_make_equal_weight_activity_backward_comparable() -> None:
+    strategy = StrategyParser.parse(json.dumps(HONEST_CONFIG))
+    result = StrategyBacktester(MarketData.synthetic(seed=17)).evaluate(
+        strategy,
+        1_500,
+    )
+    assert result.active_fraction == pytest.approx(
+        result.exposure_weighted_active_fraction
+    )
+    assert result.active_fraction == pytest.approx(result.active_session_fraction)
+    assert result.average_gross_exposure == pytest.approx(result.active_fraction)
+    assert result.mean_active_gross_exposure == pytest.approx(1.0)
+    assert result.cash_fraction == pytest.approx(1.0 - result.active_fraction)
+    assert 1.0 <= result.effective_position_count <= 5.0
+    assert 0.0 < result.max_weight <= 1.0
+    assert result.realized_volatility > 0.0
+
+
 def test_carry_ranking_is_actionable_and_fails_closed_without_rates() -> None:
     carry_rank_config = json.loads(json.dumps(HONEST_CONFIG))
     carry_rank_config["entry"]["threshold"] = -0.10
@@ -250,6 +360,39 @@ def test_dsr_deflates_the_same_returns_as_trial_count_grows() -> None:
     one_hundred_trials = DeflatedSharpeRatio.probability(returns, trials=100)
     assert one_trial > one_hundred_trials
     assert 0.0 <= one_hundred_trials <= 1.0
+
+
+def test_behavioral_effective_rank_detects_return_stream_duplicates() -> None:
+    rng = np.random.default_rng(12)
+    first = rng.normal(0.0, 0.01, 336)
+    duplicate = first.copy()
+    independent = rng.normal(0.0, 0.01, 336)
+
+    duplicate_rank, duplicate_correlation = BehavioralDiversity.summarize(
+        np.vstack([first, duplicate])
+    )
+    diverse_rank, diverse_correlation = BehavioralDiversity.summarize(
+        np.vstack([first, independent])
+    )
+    assert duplicate_rank == pytest.approx(1.0)
+    assert duplicate_correlation == pytest.approx(1.0)
+    assert diverse_rank > duplicate_rank
+    assert diverse_correlation < duplicate_correlation
+
+
+def test_reward_dsr_uses_a_dispersion_floor_when_behavior_collapses() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    strategy = StrategyParser.parse(json.dumps(HONEST_CONFIG))
+    first, second = scorer.score_group([strategy, strategy], as_of_index=1_500)
+
+    assert first.observed_trial_sharpe_std == pytest.approx(0.0)
+    assert first.reward_trial_sharpe_std > 0.0
+    assert first.behavioral_effective_rank == pytest.approx(1.0)
+    assert first.behavioral_effective_rank_ratio == pytest.approx(0.5)
+    assert first.mean_pairwise_absolute_correlation == pytest.approx(1.0)
+    assert first.dsr < first.diagnostic_dsr
+    assert first.reward_minus_diagnostic_dsr < 0.0
+    assert first.metrics() == second.metrics()
 
 
 def test_cscv_detects_a_split_selected_overfit_strategy() -> None:
@@ -331,8 +474,8 @@ def test_signature_overfit_config_scores_below_parsimonious_config() -> None:
 
 def test_reward_tiers_make_every_pass_outrank_the_best_nonpass() -> None:
     scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
-    least_complex = 5.0 / 8.0
-    most_complex = 6.0 / 8.0
+    least_complex = scorer.MIN_COMPLEXITY
+    most_complex = scorer.MAX_COMPLEXITY
 
     worst_pass = scorer._shaped_reward(
         dsr=np.nextafter(scorer.DSR_PASS_THRESHOLD, 1.0),
@@ -482,6 +625,35 @@ def test_activity_gate_blocks_near_no_trade_strategies() -> None:
     assert not scorer._passes_gate(1.0, 0.0, robust_es, 0.099, 8)
     assert not scorer._passes_gate(1.0, 0.0, robust_es, 1.0, 3)
     assert scorer._passes_gate(1.0, 0.0, robust_es, 0.10, 4)
+
+
+def test_exposure_gate_blocks_tiny_nonzero_allocations() -> None:
+    scorer = HonestScorer(StrategyBacktester(market=MarketData.synthetic(seed=17)))
+    robust_es = scorer.EXPECTED_SHORTFALL_ROBUST_TARGET
+    assert not scorer._passes_gate(
+        1.0,
+        0.0,
+        robust_es,
+        active_fraction=0.01,
+        active_windows=8,
+        mean_active_gross_exposure=0.01,
+    )
+    assert not scorer._passes_gate(
+        1.0,
+        0.0,
+        robust_es,
+        active_fraction=0.20,
+        active_windows=8,
+        mean_active_gross_exposure=0.249,
+    )
+    assert scorer._passes_gate(
+        1.0,
+        0.0,
+        robust_es,
+        active_fraction=0.10,
+        active_windows=4,
+        mean_active_gross_exposure=0.25,
+    )
 
 
 def test_expected_shortfall_gate_blocks_concentrated_downside() -> None:
